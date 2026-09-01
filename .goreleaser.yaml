@@ -1,0 +1,61 @@
+# goreleaser — GitHub Releases static binary + checksums (DESIGN §10).
+# Not a build dependency: `make release-check` validates this file only.
+version: 2
+
+project_name: ompinyin
+
+builds:
+  - id: ompinyin
+    main: ./cmd/ompinyin
+    binary: ompinyin
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/ProjectAILeap/ompinyin/internal/catalog.Version={{.Version}}
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+# Bare binaries, named WITHOUT the version so `releases/latest/download/…`
+# keeps working as the project grows. Version is still recoverable at runtime
+# via `ompinyin version`.
+archives:
+  - id: ompinyin
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - binary
+
+# The release body stays short and points at the README for install/rollback.
+release:
+  mode: replace
+  header: |
+    ## ompinyin {{ .Tag }}
+
+    Omarchy 中文输入法一键部署：雾凇全拼 + 万象 LMDG + 顶栏输入法图标。
+
+    从本页按架构下载：`ompinyin_linux_amd64`（X86_64）或 `ompinyin_linux_arm64`（ARM64），
+    下载后建议用 `checksums.txt` 里的 sha256 校验。安装：
+
+    ```bash
+    curl -fsSL -o ompinyin https://github.com/ProjectAILeap/ompinyin/releases/latest/download/ompinyin_linux_amd64
+    install -Dm755 ompinyin ~/.local/bin/ompinyin
+    ompinyin install
+    ```
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^test:"

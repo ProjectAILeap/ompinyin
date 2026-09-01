@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: gofmt
+        run: |
+          out=$(gofmt -l ./cmd ./internal)
+          if [ -n "$out" ]; then echo "unformatted:"; echo "$out"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      # 评审里一半的缺陷（渲染了未排序的切片、未使用的 ordered 变量、被丢弃的
+      # error 返回值、panic 路径）都属于 lint 可拦类，所以 lint 是必过门槛。
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.13.2
+          args: --timeout 5m
+      - name: go test
+        run: go test -race ./...
+      - name: build smoke
+        run: go build -o bin/ompinyin -ldflags "-X github.com/ProjectAILeap/ompinyin/internal/catalog.Version=${GITHUB_REF_NAME:-dev}" ./cmd/ompinyin
+      - name: version smoke
+        run: ./bin/ompinyin version
+      # 绝不在 CI 跑系统操作（§9）：T0 假宿主单测覆盖约 70% 代码路径，
+      # 真机验收（T3/T4）由本机 checklist 承担，见 DESIGN.md §15。

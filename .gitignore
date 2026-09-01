@@ -1,0 +1,18 @@
+# Binaries
+/ompinyin
+/ompinyin.exe
+dist/
+bin/
+
+# Go artifacts
+*.test
+*.out
+coverage.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local test artifacts
+vm-install.log

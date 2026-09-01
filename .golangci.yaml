@@ -1,0 +1,44 @@
+# golangci-lint v2 config — CI runs this; `make lint` too.
+#
+# The default set (errcheck, govet, ineffassign, staticcheck, unused) is
+# enabled. errcheck is the only one that needs tuning: cleanup-path errors
+# (Close on a file we are done with, Remove of a temp that may not exist,
+# writes to stdout/stderr) are genuinely ignorable here, but everything that
+# guards a user-visible promise (backup before overwrite, checksum before
+# cache) must be checked — so the exclusions are explicit function lists, not
+# blanket line ignores.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  # Test fixtures build zips/HTTP handlers where a write error means the test
+  # environment broke; the assertion right after it fails anyway. Production
+  # code keeps full errcheck coverage.
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+  settings:
+    errcheck:
+      exclude-functions:
+        # output streams: nothing actionable to do if the terminal vanishes
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        # cleanup / best-effort teardown
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*os.File).Chmod
+        - os.Remove
+        - os.RemoveAll
+        - os.Chmod
+        - (*archive/zip.ReadCloser).Close
+        - (*archive/zip.File).Close
+
+formatters:
+  enable:
+    - gofmt
