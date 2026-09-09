@@ -36,12 +36,18 @@ type Plan struct {
 	NeedHost   bool // profile / hotkey / drop-in work
 	NeedTray   bool // notificationitem drop-in or the Fcitx pin
 	NeedTheme  bool // candidate-window theming work (§6.6)
+	NeedHidpi  bool // X11 Xft.dpi block / publisher units / published value
+	// NeedHidpiUndo withdraws a previously opted-in compat mode: the managed
+	// Xresources block or the two publisher units exist, but Desired no longer
+	// opts in. Keeping it separate from NeedHidpi keeps the fcitx5 stop window
+	// (which only applies the mode) free of teardown work.
+	NeedHidpiUndo bool
 }
 
 // NeedsApply reports whether any mutating layer has work. L5 is read-only and
 // never counts, so a converged host re-run returns false and skips the backup.
 func (p *Plan) NeedsApply() bool {
-	return p.NeedL1 || p.NeedL2 || p.NeedL3 || p.NeedDeploy || p.NeedHost || p.NeedTray || p.NeedTheme
+	return p.NeedL1 || p.NeedL2 || p.NeedL3 || p.NeedDeploy || p.NeedHost || p.NeedTray || p.NeedTheme || p.NeedHidpi || p.NeedHidpiUndo
 }
 
 // New returns an empty plan.
@@ -85,9 +91,13 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	p := New()
 
 	// L1 pkgs
-	p.NeedL1 = len(c.PackagesMissing) > 0
+	missingPkgs := append([]string{}, c.PackagesMissing...)
+	if d.X11HiDPI && c.X11PackageMissing {
+		missingPkgs = append(missingPkgs, "xorg-xrdb")
+	}
+	p.NeedL1 = len(missingPkgs) > 0
 	if p.NeedL1 {
-		p.Add("L1", fmt.Sprintf("pacman -S --needed %s", strings.Join(c.PackagesMissing, " ")), true)
+		p.Add("L1", fmt.Sprintf("pacman -S --needed %s", strings.Join(missingPkgs, " ")), true)
 	} else {
 		p.Add("L1", "系统包已齐（fcitx5-rime fcitx5-configtool fcitx5-gtk）", false)
 	}
@@ -142,6 +152,13 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	p.NeedDeploy = len(c.BuildMissing) > 0 || p.NeedL3
 	p.NeedHost = !c.ProfileHasRime || !c.HotkeyOK || !c.DropInOK
 	p.NeedTray = !c.PinnedHasFc || !c.DropInOK
+	// A zero desired DPI is the legacy/test snapshot meaning that X11 facts
+	// were not collected. Real observe.Collect always supplies at least 96.
+	p.NeedHidpi = d.X11HiDPI && c.X11DPIDesired > 0 && (!c.X11ConfigOK || !c.X11UnitsOK || (c.X11Available && c.X11DPIActual != c.X11DPIDesired))
+	// Opt-out is itself convergence work: the mode's artifacts (managed block
+	// and/or publisher units) must be withdrawn, or --no-x11-hidpi would be a
+	// lie and the units would keep re-publishing Xft.dpi on every scale edit.
+	p.NeedHidpiUndo = !d.X11HiDPI && (c.X11ManagedPresent || c.X11UnitsOK)
 	if p.NeedDeploy || p.NeedHost {
 		p.Add("L4", fmt.Sprintf("stop %s → rime_deployer --build → profile/hotkey/drop-in → start", unitName(c)), true)
 	} else {
@@ -153,6 +170,19 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 		p.Add("L4", "顶栏图标：启用 notificationitem + pin Fcitx（读→合并→set）", true)
 	} else {
 		p.Add("L4", "顶栏图标已 pin", false)
+	}
+	if !d.X11HiDPI {
+		if p.NeedHidpiUndo {
+			p.Add("L4", "X11 HiDPI：撤销 opt-in——移除受管 Xft.dpi 块并禁用/删除缩放监听单元", true)
+		} else {
+			p.Add("L4", "X11 HiDPI 兼容模式未启用（Xft.dpi 是全局 XWayland 资源，默认只诊断；候选框过小时显式 --x11-hidpi）", false)
+		}
+	} else if c.X11DPIDesired == 0 {
+		p.Add("L4", "X11 HiDPI：未采集 X11 事实", false)
+	} else if p.NeedHidpi {
+		p.Add("L4", fmt.Sprintf("X11 HiDPI：收敛 Xft.dpi=%d、发布 xrdb 并安装缩放监听", c.X11DPIDesired), true)
+	} else {
+		p.Add("L4", fmt.Sprintf("X11 HiDPI 已发布 Xft.dpi=%d", c.X11DPIDesired), false)
 	}
 
 	// L4 candidate-window theming (§6.6)

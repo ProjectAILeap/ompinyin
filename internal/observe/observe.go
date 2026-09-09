@@ -10,6 +10,7 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/assets"
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/deploy"
+	"github.com/ProjectAILeap/ompinyin/internal/hidpi"
 	"github.com/ProjectAILeap/ompinyin/internal/hotkey"
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
 	"github.com/ProjectAILeap/ompinyin/internal/pkgs"
@@ -85,6 +86,18 @@ type Current struct {
 	BuildMissing []string
 
 	LegacyDirExists bool // ~/.config/fcitx/rime (§6.5)
+
+	// X11 HiDPI facts (DESIGN §6.7). Whether the compat mode is on lives in
+	// Desired (explicit opt-in); what the display reports is observed here and
+	// never configured by ompinyin.
+	X11Scale          float64
+	X11DPIDesired     int
+	X11DPIActual      int
+	X11Available      bool
+	X11ConfigOK       bool
+	X11UnitsOK        bool
+	X11ManagedPresent bool // ompinyin-scoped Xft.dpi block exists in ~/.Xresources
+	X11PackageMissing bool
 }
 
 // Collect probes the host. Best-effort: probe errors are surfaced as
@@ -95,6 +108,9 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 	missing, err := pkgs.Missing(pkgs.Needed...)
 	if err == nil {
 		c.PackagesMissing = missing
+	}
+	if missing, err := pkgs.Missing(pkgs.X11HiDPIPackage); err == nil {
+		c.X11PackageMissing = len(missing) > 0
 	}
 	c.Unit = service.FindUnit(state.Home())
 	c.ServiceActive = c.Unit != "" && service.IsActive(c.Unit)
@@ -151,6 +167,28 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 	th := theme.Observe(state.Home(), st)
 	c.ThemeConfOK, c.ThemeHookOK, c.ThemeDirOK = th.ConfOK, th.HookOK, th.DirOK
 	c.ThemeEqual = th.ConfEqual && th.HookEqual
+
+	// XWayland may not exist in a pure Wayland session. In that case this
+	// feature is a harmless no-op rather than a failed precondition.
+	monitors, _ := hidpi.Run("hyprctl", "monitors", "-j")
+	lua, _ := os.ReadFile(filepath.Join(state.Home(), ".config", "hypr", "monitors.lua"))
+	xr, _ := os.ReadFile(hidpi.XresourcesPath(state.Home()))
+	c.X11Scale, _ = hidpi.ReadScale(monitors, lua, xr)
+	c.X11DPIDesired = hidpi.DPI(c.X11Scale)
+	if actual, err := hidpi.Run("xrdb", "-query"); err == nil {
+		c.X11Available = true
+		c.X11DPIActual, _ = hidpi.ParseXftDPI(actual)
+	}
+	if merged, _ := hidpi.MergeXresources(string(xr), c.X11DPIDesired); string(xr) == merged {
+		c.X11ConfigOK = true
+	}
+	c.X11ManagedPresent = hidpi.ManagedBlockPresent(string(xr))
+	serviceBody, pathBody := hidpi.UnitContent()
+	if sb, err := os.ReadFile(hidpi.ServicePath(state.Home())); err == nil {
+		if pb, perr := os.ReadFile(hidpi.PathPath(state.Home())); perr == nil {
+			c.X11UnitsOK = string(sb) == serviceBody && string(pb) == pathBody
+		}
+	}
 
 	// build artifacts (only meaningful when data dir exists)
 	if _, err := os.Stat(c.RimeDir); err == nil {

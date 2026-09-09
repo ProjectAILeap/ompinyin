@@ -81,6 +81,8 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 | 只要双拼、去掉全拼 | `ompinyin switch --dsp zrm --no-quanpin` |
 | 去掉双拼 / 全拼做默认 | `ompinyin switch --dsp none` / `ompinyin switch --full` |
 | 不要 420MB 模型 | `ompinyin install --no-model`（`--model` 重新启用） |
+| 修复已验证的旧 X11 候选框过小 | `ompinyin install --x11-hidpi`（默认只诊断，见下方风险） |
+| 撤销 X11 HiDPI 兼容模式 | `ompinyin install --no-x11-hidpi`（移除受管块与缩放监听） |
 | 刷新数据到最新 | `ompinyin update`（`--self` 一并升级程序） |
 | 装包失败 / 镜像慢 | `ompinyin source` 后重跑 `install` |
 | 看状态差异 / 体检 | `ompinyin status` / `ompinyin doctor` |
@@ -97,6 +99,7 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 | `--dry-run` | 只预览计划，不改动 |
 | `--dsp zrm` | 加一种双拼；`--dsp-default` 让其为默认，`--no-quanpin` 去掉全拼，`--dsp none` 去掉双拼 |
 | `--no-model` / `-s` | 不下载万象整句模型；`--model` 重新启用 |
+| `--x11-hidpi` / `--no-x11-hidpi` | 显式开启 / 关闭旧 X11 ClassicUI 候选框缩放兼容模式；默认关闭 |
 | `--mirror cn / auto / ghproxy / upstream / URL` | 下载源（默认 `cn`：国内镜像优先，失败自动回退官方） |
 | `-b` / `--full-backup` | 备份整个 rime + fcitx5 配置目录（而不只受管文件） |
 | `--mirror <本地目录>` | **离线安装**：指向放好 `rime-ice-full-stable.zip` / `wanxiang-lts-zh-hans.gram` 的目录（也支持 `file://`） |
@@ -114,6 +117,7 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 - **手改受管文件会被覆盖**：由工具生成的文件请写独立的非受管补丁，别手改。
 - **Foot终端全屏输入时可能出现候选框不可见**：Hyprland 渲染器问题，本工具范围外（桌面窗口正常）。
 - **候选框主题依赖当前 Omarchy 主题颜色**（`~/.local/state/omarchy/current/theme/colors.toml`）：它不存在时（极少见）候选框保持 fcitx5 默认外观，`ompinyin doctor` 会提示「候选框主题」未达标。
+- **X11 HiDPI 是显式 opt-in 的兼容模式，不是默认项**：`--x11-hidpi` 写入**全局** XWayland `Xft.dpi`。它可修复微信等旧 X11 输入上下文的 fcitx5 候选框过小，但其它读取该资源的 X11/Electron 应用可能已被合成器或自身缩放，再被放大一次——这是对整桌面的全局副作用，所以默认只读诊断：`doctor`/`status` 每次都展示 X11 缩放与 Xft.dpi 现状而不改任何文件，先用 `doctor` 确认候选框过小，再只在已验证的应用上 `install --x11-hidpi` 启用。**混合 DPI 多屏没有可靠的单值解**：XWayland 与 `Xft.dpi` 都是全局的，不能同时精确适配每块屏，也不会随焦点屏自动切换（来回改值会影响所有 X11 应用并打断输入）。用 `install --no-x11-hidpi` 撤销（移除受管块与监听单元；当前会话已发布的值保持到注销）。
 
 ## 关键路径
 

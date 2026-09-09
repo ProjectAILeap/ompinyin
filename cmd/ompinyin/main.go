@@ -89,6 +89,9 @@ func run(args []string) int {
 		return cmdUninstall(args[1:])
 	case "source":
 		return cmdSource(args[1:])
+	case "x11-hidpi-apply":
+		// Internal systemd-user hook; not part of the public CLI contract.
+		return converge.ApplyX11HiDPI(newOpts())
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
 		usage()
@@ -161,6 +164,8 @@ func cmdInstall(argv []string) int {
 		noModelS   = fs.Bool("s", false, "shorthand for --no-model")
 		model      = fs.Bool("model", false, "re-enable the wanxiang LMDG model recorded in state.json")
 		channel    = fs.String("channel", "stable", "asset channel: stable|nightly")
+		x11HiDPI   = fs.Bool("x11-hidpi", false, "opt in to global XWayland Xft.dpi compatibility mode")
+		noX11HiDPI = fs.Bool("no-x11-hidpi", false, "disable the global XWayland Xft.dpi compatibility mode")
 		yes        = fs.Bool("yes", false, "assume yes, non-interactive")
 		yesS       = fs.Bool("y", false, "shorthand for --yes")
 		dryRun     = fs.Bool("dry-run", false, "print the plan without applying changes")
@@ -198,6 +203,10 @@ func cmdInstall(argv []string) int {
 		fmt.Fprintln(os.Stderr, "--model 与 --no-model/-s 互斥")
 		return converge.ExitUsage
 	}
+	if *x11HiDPI && *noX11HiDPI {
+		fmt.Fprintln(os.Stderr, "--x11-hidpi 与 --no-x11-hidpi 互斥")
+		return converge.ExitUsage
+	}
 	if *jsonOut && !*dryRun {
 		fmt.Fprintln(os.Stderr, "--json 仅与 --dry-run 连用（输出机器可读计划）")
 		return converge.ExitUsage
@@ -219,6 +228,7 @@ func cmdInstall(argv []string) int {
 		DSP: *dspFlags, Channel: *channel,
 		DSPDefault: *dspDefault, NoQuanpin: *noQuanpin,
 		NoModel: *noModel || *noModelS, Model: *model,
+		X11HiDPI: *x11HiDPI, NoX11HiDPI: *noX11HiDPI,
 	}, touched)
 
 	opts := newOpts()
@@ -323,6 +333,8 @@ type installFlags struct {
 	NoQuanpin  bool
 	NoModel    bool
 	Model      bool
+	X11HiDPI   bool
+	NoX11HiDPI bool
 }
 
 // applyInstallFlags overlays the EXPLICITLY GIVEN flags on the persisted
@@ -340,6 +352,12 @@ func applyInstallFlags(base catalog.Desired, f installFlags, touched map[string]
 	}
 	if touched["channel"] {
 		d.Channel = f.Channel
+	}
+	if touched["x11-hidpi"] {
+		d.X11HiDPI = true
+	}
+	if touched["no-x11-hidpi"] {
+		d.X11HiDPI = false
 	}
 	if !touched["dsp"] {
 		return d
@@ -448,7 +466,7 @@ func usage() {
 
 Usage:
   ompinyin install [--dsp ID|none] [--dsp-default] [--no-quanpin]
-                [--model | -s|--no-model] [--channel stable|nightly] [-y|--yes] [--dry-run]
+		        [--model | -s|--no-model] [--channel stable|nightly] [--x11-hidpi|--no-x11-hidpi] [-y|--yes] [--dry-run]
                 [--mirror auto|cn|ghproxy|upstream|URL] [-b|--full-backup]
                 [--os-override omarchy] [--dry-run --json]
   ompinyin update                            # L2 资产刷新到最新并重编译（--dry-run --json 可预览；--self 一并自升级）
@@ -456,7 +474,7 @@ Usage:
   ompinyin switch --dsp none                 # 去掉双拼，回到仅全拼
   ompinyin switch --full                     # 全拼改回 schema_list[0]
   ompinyin status                            # 现状 vs 终态 diff
-  ompinyin doctor                            # 服务 / IM 三态 / 红线 / 触发键 / 顶栏图标
+  ompinyin doctor                            # 服务 / IM 三态 / 红线 / 触发键 / 顶栏图标 / X11 HiDPI
   ompinyin clean [--legacy]                  # 清缓存 / 老路径 ~/.config/fcitx/rime
   ompinyin uninstall                         # 受管文件删除 + profile 移除 + 托盘还原
   ompinyin source [--preset cn|upstream]     # 配置 pacman 仓库镜像（默认 cn：core+extra 走中国源）
@@ -473,5 +491,8 @@ Usage:
 顶栏输入法图标是必做终态：无 --tray-pin / --no-tray 选项，装上就有。
 切方案用 F4；触发键（Alt+Space）切中英。
 候选框跟随 Omarchy 主题配色：安装即生效；每次换主题自动刷新（无需重启 fcitx5）。
+
+X11 HiDPI 默认只诊断。--x11-hidpi 会写全局 XWayland Xft.dpi，可能让其它 X11/Electron
+应用二次缩放；混合 DPI 多屏无法同时精确，仅在已验证的旧 X11 应用候选框过小时启用。
 `)
 }

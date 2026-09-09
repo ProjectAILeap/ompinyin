@@ -128,11 +128,11 @@ unlock
 
 | 层 | 内容 | 变更方式 |
 |---|---|---|
-| L1 系统包 | fcitx5-rime fcitx5-configtool fcitx5-gtk（最小集：fcitx5/fcitx5-qt/librime/opencc 由依赖闭包带入；octagram= librime 的 librime-octagram.so 插件，非独立包） | `pacman -S --needed --noconfirm`（`--yes` 时） |
+| L1 系统包 | fcitx5-rime fcitx5-configtool fcitx5-gtk（最小集：fcitx5/fcitx5-qt/librime/opencc 由依赖闭包带入；octagram= librime 的 librime-octagram.so 插件，非独立包）；`xorg-xrdb` 仅 `--x11-hidpi` 时加入 | `pacman -S --needed --noconfirm`（`--yes` 时） |
 | L2 数据资产 | 雾凇 `full.zip` + 万象 `.gram`，带版本号和 sha256 | 下载 → 校验 → 解压/落位 |
 | L3 配置覆盖 | 受管 `*.custom.yaml`（集合随 Layout 变） | 整文件生成（所有权协议见 §5） |
 | （缝）部署 | `rime_deployer --build $RIME /usr/share/rime-data $RIME/build` | **fcitx5 必须已停** |
-| L4 宿主集成 | profile、触发键、drop-in、start、**顶栏图标、候选框主题** | 一个 stop 窗口（见 §6.0）；候选框主题在 stop 窗口之外热重载 |
+| L4 宿主集成 | profile、触发键、drop-in、start、**顶栏图标、候选框主题**；可选的 X11 HiDPI 兼容模式 | 一个 stop 窗口（见 §6.0）；候选框主题在 stop 窗口之外热重载 |
 | L5 验证 | 编译产物、模型编入、IM 三态、托盘可见、候选框主题、人工 checklist | **只读** |
 
 > **L1 仓库（收敛不接管镜像）**：三个 L1 包都在 **`extra`** 仓库（`stable-mirror.omarchy.org/extra`）。`pacman -S` 的镜像来自系统 `/etc/pacman.d/mirrorlist` + `/etc/pacman.conf`，`install`/`update`/`switch` 收敛**不接管、不修改**。镜像改动的唯一入口是独立的 **`source`** 命令（§7）。`--mirror` 只作用于 **L2 资产**，对 L1 无效。Omarchy 官方 `stable-mirror.omarchy.org` / `pkgs.omarchy.org` 走 Cloudflare CDN，大陆直连可能不稳；处理方案：代理 / `XferCommand` 重试续传 / `source --preset cn` 把 `core`+`extra` 指向国内 stock-Arch 镜像——注意 stable 是**锁版本快照**有漂移风险，`[omarchy]` 仓库**无国内镜像**。
@@ -361,6 +361,12 @@ fcitx5 SNI 的 `Id` = **`Fcitx`**（`Tray.qml` 用 `pinnedIds.indexOf(item.id)` 
 - **受管文件的字体**：`Font`/`MenuFont` 取自 `omarchy-font-current`（Pango 会经 fontconfig 回退 CJK 字体）；取不到用 `Sans`。
 - **边界**：当前 Omarchy 主题颜色（`~/.local/state/omarchy/current/theme/colors.toml` + `omarchy-theme-color`）缺失时钩子静默退出、候选框保持默认外观，`doctor` 报「候选框主题」未达标；UI 字体换肤（Tray/inline preedit 等）不属于本终态。
 
+### 6.7 可选 X11 HiDPI 兼容模式（ClassicUI 候选框）
+
+XWayland 的 RandR DPI 固定为 96，故 ClassicUI 的 X11 候选框可通过 `xrdb` 的根窗口 `RESOURCE_MANAGER/Xft.dpi` 缩放。但它是**全局 XWayland 资源**：其它 X11/Electron 应用若已由合成器或自身缩放，再读取它可能二次放大。因此**默认只诊断**：`status`/`doctor` 永远读回并展示 X11 事实，但不写文件、不装 `xorg-xrdb`；用户确认旧 X11 应用候选框过小时，才以 `install --x11-hidpi` 明确 opt-in（持久化进 `Desired.X11HiDPI`）。启用时取 `round(96 × scale)`，不写 Hyprland 配置或 `classicui.conf`；`~/.Xresources` 仅管理标记块中的 `Xft.dpi`，保留其余用户内容。混合 DPI 多屏没有正确的自动解：XWayland 和 Xft 都是单个全局值，焦点屏动态切换会影响所有 X11 应用并打断输入，故不做自动随焦点切换；以用户选择启用的固定当前值为兼容取舍。
+
+撤销用 `install --no-x11-hidpi`：先 `disable --now` path 单元（防监视器变化再发布）→ 删两个 user 单元 → 移除受管块（空则删 `~/.Xresources`）；当前会话已发布的值保留到注销（`xrdb -load` 会清空用户整库，破坏性过大，不做运行时还原）。`ompinyin x11-hidpi-apply`（内部命令，不进 CLI 契约）是登录发布/缩放监听的私有入口：未 opt-in 时 no-op，防残留 enable 链接继续发布全局资源。
+
 ---
 
 ## 7. CLI
@@ -521,3 +527,5 @@ v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 状态清单
 22. 预检必须拦 root 与缺失的 `rime_deployer`/`fcitx5-remote`/`omarchy`；`--os-override` 任意非空值即绕过 ID 检查并告警。
 23. SIGINT/SIGTERM 走 context 取消（第二次信号硬退出 130），使 stop 窗口的 defer 仍能收尾。
 24. 候选框主题：颜色映射唯一来源是 theme-set 钩子脚本（Go 侧不重复）；classicui.conf 与钩子入账、按 §5.1 协议覆盖；生成目录不入账但 uninstall 显式删除；热重载只用 `ReloadAddonConfig`（`fcitx5-remote -r` 不重读 addon 配置）。
+25. X11 HiDPI（§6.7）默认只诊断：`--x11-hidpi` 未显式给出时，收敛绝不写 `~/.Xresources`、不装 `xorg-xrdb`、不装两个 user 单元；`Desired.X11HiDPI` 由且仅由命令行显式 flag 置位。
+26. 已 opt-in 的 X11 HiDPI 是**行级拥有**（marker 块内仅 `Xft.dpi`）；`monitors.lua` 与 Hyprland 配置只读不写；`classicui.conf` 永不写。撤销（`--no-x11-hidpi`）先禁 path 单元再删文件；`ApplyX11HiDPI` 在未 opt-in 时 no-op。

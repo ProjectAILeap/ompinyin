@@ -75,7 +75,7 @@ func TestValidateRules(t *testing.T) {
 func TestGrammarPatchGolden(t *testing.T) {
 	got := GrammarPatch()
 	want := strings.Join([]string{
-		"# managed by ompinyin v" + Version + " — hand edits will be overwritten",
+		"# managed by ompinyin v" + ManagedFormat + " — hand edits will be overwritten",
 		"patch:",
 		"  grammar:",
 		"    language: wanxiang-lts-zh-hans",

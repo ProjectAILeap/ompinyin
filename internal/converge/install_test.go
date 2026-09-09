@@ -17,6 +17,7 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/deploy"
 	"github.com/ProjectAILeap/ompinyin/internal/facts"
+	"github.com/ProjectAILeap/ompinyin/internal/hidpi"
 	"github.com/ProjectAILeap/ompinyin/internal/observe"
 	"github.com/ProjectAILeap/ompinyin/internal/pkgs"
 	"github.com/ProjectAILeap/ompinyin/internal/selfup"
@@ -37,6 +38,9 @@ var assetsResolveStableTagProd = assets.ResolveStableTag
 // omarchy/fcitx5-remote/rime_deployer).
 var factsLookPathProd = facts.LookPath
 
+// hidpiRunProd preserves the production hyprctl/xrdb runner across tests.
+var hidpiRunProd = hidpi.Run
+
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 
 func jsonMarshal(v any) []byte {
@@ -56,6 +60,7 @@ type fakeHost struct {
 	barSets     [][]string
 	buildRuns   int
 	themeReload int
+	xrdb        []byte // RESOURCE_MANAGER state served by fake `xrdb -query`
 }
 
 func setupFakeHost(t *testing.T, home string) *fakeHost {
@@ -114,6 +119,23 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 	// the schemas are synthesized below by CompileSchemas (fcitx5-rime lazy deploy).
 	deploy.Run = func(dir, name string, args ...string) error {
 		return nil
+	}
+
+	// fake hyprctl + xrdb: focused monitor scale=2 (→ Xft.dpi 192); `xrdb -query`
+	// echoes the last merged file, so the published-value diff is observable.
+	hidpi.Run = func(name string, args ...string) ([]byte, error) {
+		switch {
+		case name == "hyprctl":
+			return []byte(`[{"focused":true,"scale":2}]`), nil
+		case name == "xrdb" && len(args) >= 1 && args[0] == "-query":
+			return h.xrdb, nil
+		case name == "xrdb" && len(args) == 2 && args[0] == "-merge":
+			if b, err := os.ReadFile(args[1]); err == nil {
+				h.xrdb = b
+			}
+			return nil, nil
+		}
+		return nil, nil
 	}
 
 	// fake rime lazy deploy: synthesize the grammar-compiled build schemas
@@ -207,6 +229,7 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 		service.RunOutput = nil
 		deploy.Run = nil
 		deploy.CompileSchemas = nil
+		hidpi.Run = hidpiRunProd
 		tray.ShellRunning = nil
 		tray.Run = nil
 		theme.Run = nil
@@ -1045,5 +1068,114 @@ func TestUninstallRemovesThemeFootprint(t *testing.T) {
 	// in memory until restart)
 	if h.themeReload == 0 {
 		t.Error("uninstall must hot-reload fcitx5 to drop the themed candidate window")
+	}
+}
+
+// TestInstallX11HiDPIDiagnosticsOnlyByDefault: a default install must NOT
+// touch any global XWayland resource — no ~/.Xresources file, no user units.
+func TestInstallX11HiDPIDiagnosticsOnlyByDefault(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	seedCache(t, home)
+
+	opts, out := newTestOpts()
+	if code := Install(catalog.DefaultDesired(), false, opts); code != ExitOK {
+		t.Fatalf("install exit=%d\noutput:\n%s", code, out.String())
+	}
+	if _, err := os.Stat(hidpi.XresourcesPath(home)); err == nil {
+		t.Error("default install must not create ~/.Xresources")
+	}
+	for _, p := range []string{hidpi.ServicePath(home), hidpi.PathPath(home)} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("default install must not install %s", p)
+		}
+	}
+	if len(h.xrdb) != 0 {
+		t.Errorf("default install must not publish RESOURCE_MANAGER, got %q", h.xrdb)
+	}
+}
+
+// TestInstallX11HiDPIOptInConvergesAndOptOutUndoes: the full opt-in /
+// opt-out cycle. Opt-in writes the managed block and the two units and
+// publishes the value; a re-run is a no-op; --no-x11-hidpi withdraws all
+// three artifacts again.
+func TestInstallX11HiDPIOptInConvergesAndOptOutUndoes(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	seedCache(t, home)
+
+	opts, out := newTestOpts()
+	d := catalog.DefaultDesired()
+	d.X11HiDPI = true
+
+	if code := Install(d, false, opts); code != ExitOK {
+		t.Fatalf("opt-in install exit=%d\noutput:\n%s", code, out.String())
+	}
+	b, err := os.ReadFile(hidpi.XresourcesPath(home))
+	if err != nil {
+		t.Fatalf("managed Xresources missing: %v", err)
+	}
+	if dpi, ok := hidpi.ParseXftDPI(b); !ok || dpi != 192 {
+		t.Errorf("managed Xft.dpi=%d,%v, want 192 (scale 2.0)", dpi, ok)
+	}
+	for _, p := range []string{hidpi.ServicePath(home), hidpi.PathPath(home)} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("unit %s not installed: %v", p, err)
+		}
+	}
+	if !bytes.Contains(h.xrdb, []byte("Xft.dpi: 192")) {
+		t.Errorf("published RESOURCE_MANAGER missing Xft.dpi: %q", h.xrdb)
+	}
+
+	// re-run must converge to a no-op (idempotent, one managed block)
+	opts2, out2 := newTestOpts()
+	if code := Install(d, false, opts2); code != ExitOK {
+		t.Fatalf("re-run exit=%d\noutput:\n%s", code, out2.String())
+	}
+	b2, _ := os.ReadFile(hidpi.XresourcesPath(home))
+	if dpi, ok := hidpi.ParseXftDPI(b2); !ok || dpi != 192 {
+		t.Errorf("re-run broke Xft.dpi=%d,%v", dpi, ok)
+	}
+
+	// opt-out withdraws everything ompinyin owned
+	opts3, out3 := newTestOpts()
+	d3 := catalog.DefaultDesired() // X11HiDPI = false
+	if code := Install(d3, false, opts3); code != ExitOK {
+		t.Fatalf("opt-out install exit=%d\noutput:\n%s", code, out3.String())
+	}
+	if _, err := os.Stat(hidpi.XresourcesPath(home)); err == nil {
+		t.Error("~/.Xresources should be removed after opt-out (only the managed block was in it)")
+	}
+	for _, p := range []string{hidpi.ServicePath(home), hidpi.PathPath(home)} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("unit %s still present after opt-out", p)
+		}
+	}
+}
+
+// TestApplyX11HiDPINoOpWithoutOptIn: the systemd hook must never publish the
+// global resource when the mode is not recorded as opted-in (stale enable
+// link or manual re-enable must not start writing behind the user's back).
+func TestApplyX11HiDPINoOpWithoutOptIn(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	seedCache(t, home)
+
+	opts, _ := newTestOpts()
+	if code := Install(catalog.DefaultDesired(), false, opts); code != ExitOK {
+		t.Fatalf("default install exit=%d", code)
+	}
+	if _, err := os.Stat(hidpi.XresourcesPath(home)); err == nil {
+		t.Fatal("precondition broken: default install created Xresources")
+	}
+	opts2, out2 := newTestOpts()
+	if code := ApplyX11HiDPI(opts2); code != ExitOK {
+		t.Fatalf("ApplyX11HiDPI exit=%d\n%s", code, out2.String())
+	}
+	if _, err := os.Stat(hidpi.XresourcesPath(home)); err == nil {
+		t.Error("ApplyX11HiDPI must not write Xresources when not opted in")
+	}
+	if len(h.xrdb) != 0 {
+		t.Errorf("ApplyX11HiDPI must not publish RESOURCE_MANAGER when not opted in: %q", h.xrdb)
 	}
 }

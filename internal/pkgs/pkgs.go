@@ -19,6 +19,8 @@ import (
 //	                     restore it — it must be named explicitly. (The Omarchy
 //	                     ISO ships it, but a host that loses it never gets it
 //	                     back from rime/configtool.)
+//	xorg-xrdb         → publishes Xft.dpi to XWayland's RESOURCE_MANAGER for
+//	                     ClassicUI's X11 candidate window (§6.7).
 //
 // `fcitx5` and `opencc` are deliberately NOT declared: both arrive via the
 // closure above (fcitx5 is a dependency of fcitx5-rime and fcitx5-configtool,
@@ -26,6 +28,10 @@ import (
 // is not a pacman package at all — it is the librime plugin librime-octagram.so
 // shipped inside /usr/lib/rime-plugins/.
 var Needed = []string{"fcitx5-rime", "fcitx5-configtool", "fcitx5-gtk"}
+
+// X11HiDPIPackage is deliberately opt-in: installing it alone is harmless,
+// but the compatibility mode it enables changes a global XWayland resource.
+const X11HiDPIPackage = "xorg-xrdb"
 
 // Run is the exec seam for tests (fake pacman in T0).
 var Run = func(name string, args ...string) error {

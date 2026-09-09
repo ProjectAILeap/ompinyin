@@ -41,6 +41,9 @@ type Desired struct {
 	Extra   []string `json:"extra,omitempty"`
 	Model   bool     `json:"model"`   // wanxiang LMDG
 	Channel string   `json:"channel"` // stable | nightly
+	// X11HiDPI is an explicit compatibility mode, never a default: Xft.dpi is
+	// global to XWayland and can double-scale unrelated X11 applications.
+	X11HiDPI bool `json:"x11HiDpi,omitempty"`
 }
 
 // IsZero reports whether the desired state was never persisted.

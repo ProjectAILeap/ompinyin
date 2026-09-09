@@ -10,6 +10,7 @@ import (
 
 	"github.com/ProjectAILeap/ompinyin/internal/assets"
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
+	"github.com/ProjectAILeap/ompinyin/internal/hidpi"
 	"github.com/ProjectAILeap/ompinyin/internal/observe"
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
 	"github.com/ProjectAILeap/ompinyin/internal/plan"
@@ -263,6 +264,12 @@ type HostReport struct {
 	BuildMissing    []string `json:"buildMissing,omitempty"`
 	OrphanManaged   []string `json:"orphanManaged,omitempty"`
 	LegacyDirExists bool     `json:"legacyDirExists"`
+	X11Scale        float64  `json:"x11Scale"`
+	X11DPIDesired   int      `json:"x11DpiDesired"`
+	X11DPIActual    int      `json:"x11DpiActual"`
+	X11Available    bool     `json:"x11Available"`
+	X11ConfigOK     bool     `json:"x11ConfigOK"`
+	X11UnitsOK      bool     `json:"x11UnitsOK"`
 }
 
 func planReportOf(p *plan.Plan) PlanReport {
@@ -271,6 +278,7 @@ func planReportOf(p *plan.Plan) PlanReport {
 			"l1": p.NeedL1, "l2": p.NeedL2, "l3": p.NeedL3,
 			"deploy": p.NeedDeploy, "host": p.NeedHost, "tray": p.NeedTray,
 			"theme": p.NeedTheme,
+			"hidpi": p.NeedHidpi || p.NeedHidpiUndo,
 		},
 		Steps:      stepsOf(p),
 		NeedsApply: p.NeedsApply(),
@@ -295,6 +303,8 @@ func hostReportOf(c *observe.Current) HostReport {
 		ThemeOK:       c.ThemeConfOK && c.ThemeHookOK && c.ThemeDirOK,
 		BuildMissing:  c.BuildMissing,
 		OrphanManaged: c.Orphans, LegacyDirExists: c.LegacyDirExists,
+		X11Scale: c.X11Scale, X11DPIDesired: c.X11DPIDesired, X11DPIActual: c.X11DPIActual,
+		X11Available: c.X11Available, X11ConfigOK: c.X11ConfigOK, X11UnitsOK: c.X11UnitsOK,
 	}
 }
 
@@ -516,6 +526,32 @@ func Uninstall(opts Options) int {
 	// hot-reload so a running fcitx5 drops the themed candidate window and
 	// falls back to the default (uninstall restarted it above when active)
 	_ = theme.Reload()
+
+	// X11 HiDPI owns only its marked Xresources block and its two dedicated
+	// user units. Never remove a user's other Xresources settings. Disable the
+	// watcher FIRST: it re-publishes on scale edits, and ApplyX11HiDPI is still
+	// live while state.json claims the opt-in.
+	_ = service.Run("systemctl", "--user", "disable", "--now", hidpi.PathName)
+	_ = service.Run("systemctl", "--user", "disable", hidpi.ServiceName)
+	for _, p := range []string{hidpi.ServicePath(state.Home()), hidpi.PathPath(state.Home())} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			opts.errf("[警告] 删除 X11 HiDPI 单元：%v", err)
+		}
+	}
+	xres := hidpi.XresourcesPath(state.Home())
+	if xb, rerr := os.ReadFile(xres); rerr == nil {
+		if remaining, changed, empty := hidpi.RemoveXresources(string(xb)); changed {
+			if empty {
+				if err := os.Remove(xres); err != nil && !os.IsNotExist(err) {
+					opts.errf("[警告] 删除 Xresources：%v", err)
+				}
+			} else if err := state.WriteAtomic(xres, []byte(remaining)); err != nil {
+				opts.errf("[警告] 写 Xresources：%v", err)
+			}
+			opts.outf("[完成] X11 HiDPI 受管 Xft.dpi 已移除（其余 Xresources 保留）")
+		}
+	}
+	_ = service.DaemonReload()
 
 	if err := state.Remove(); err == nil {
 		opts.outf("[完成] 状态清单已清除")

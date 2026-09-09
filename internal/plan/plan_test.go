@@ -98,3 +98,44 @@ func TestDiffModelFalse(t *testing.T) {
 		t.Errorf("model=false annotation missing:\n%s", out)
 	}
 }
+
+func TestX11HiDPIRequiresExplicitOptIn(t *testing.T) {
+	c := freshCurrent()
+	c.X11DPIDesired = 192
+	c.X11PackageMissing = true
+	defaultPlan := Diff(catalog.DefaultDesired(), c, false)
+	if strings.Contains(defaultPlan.Describe(), "xorg-xrdb") || defaultPlan.NeedHidpi {
+		t.Fatalf("default plan must not enable global X11 HiDPI:\n%s", defaultPlan.Describe())
+	}
+	d := catalog.DefaultDesired()
+	d.X11HiDPI = true
+	optInPlan := Diff(d, c, false)
+	if !optInPlan.NeedHidpi || !strings.Contains(optInPlan.Describe(), "xorg-xrdb") {
+		t.Fatalf("opt-in plan must install and converge X11 HiDPI:\n%s", optInPlan.Describe())
+	}
+}
+
+// TestX11HiDPIOptOutWithdrawsArtifacts: once opted in, a host carries the
+// managed Xresources block and the two units; turning the mode off must plan
+// their removal (and count as work — otherwise --no-x11-hidpi is a lie).
+func TestX11HiDPIOptOutWithdrawsArtifacts(t *testing.T) {
+	c := freshCurrent()
+	c.X11ManagedPresent = true
+	c.X11UnitsOK = true
+	p := Diff(catalog.DefaultDesired(), c, false)
+	if !p.NeedHidpiUndo {
+		t.Fatal("opt-out with existing artifacts must plan an undo")
+	}
+	if !p.NeedsApply() {
+		t.Fatal("undo work must count towards NeedsApply")
+	}
+	out := p.Describe()
+	if !strings.Contains(out, "撤销") {
+		t.Errorf("undo step missing from plan:\n%s", out)
+	}
+	// a clean non-opted host has nothing to withdraw
+	c2 := freshCurrent()
+	if q := Diff(catalog.DefaultDesired(), c2, false); q.NeedHidpiUndo {
+		t.Error("clean non-opted host must not plan an undo")
+	}
+}

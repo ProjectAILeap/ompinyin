@@ -57,6 +57,8 @@ L1 软件包（fcitx5-rime/configtool/fcitx5-gtk）→ L2 资源（下载、sha2
 
 纯包（`catalog`、`profile`、`hotkey`、`plan`）只接收字符串输入、保持 I/O 无关——无需假主机即可单测。
 
+> **X11 HiDPI 是 L4 的可选恒量，默认只诊断**（DESIGN §6.7）：`--x11-hidpi` opt-in 才写全局 `Xft.dpi`（`install` 持久化进 `Desired.X11HiDPI`）；`--no-x11-hidpi` 在 stop 窗口**外**撤销产物。相关收敛在 `runStopWindow` 内（`writeHidpi`），撤销在 `install` 主流程的 `undoHidpi`（不碰 fcitx5，不许 churn）。systemd 经内部命令 `ompinyin x11-hidpi-apply` 调 `converge.ApplyX11HiDPI`（未 opt-in 即 no-op）。
+
 ---
 
 ## 关键陷阱（本文档存在的理由）
@@ -119,6 +121,7 @@ CI（**绝不**跑系统操作、**绝不**碰网络）：gofmt → `go vet` →
 - `install` 把持久化的 `Desired` 当作基线——只覆盖确实出现在命令行的 flag。
 - 清理孤儿（ledger − desired）；绝不删除 ompinyin 没写过的文件。
 - 不管理 `Shift`/`Control`/Caps/`ascii_punct`/`full_shape` 这些"手感"设置（用户所有）；不装白霜（`rime-frost`）也不装万象 scheme（万只作**模型**用）；走 `tray.SetPinned`，绝不手改 `shell.json` 或直接调 `omarchy bar set`。
+- X11 HiDPI（`--x11-hidpi`）是**显式 opt-in 的兼容模式**，默认只诊断：`Xft.dpi` 是全局 XWayland 资源，可能二次放大其它 X11/Electron 应用；混合 DPI 多屏无单值精确解、不做焦点切换自动改写。撤销走 `--no-x11-hidpi`（移除受管块 + 两个 user 单元），不在 stop 窗口内做。
 
 ---
 
@@ -127,7 +130,7 @@ CI（**绝不**跑系统操作、**绝不**碰网络）：gofmt → `go vet` →
 机器可动作的表面。保持 flag 与退出码稳定——改动会破坏 agent 提示词与脚本。
 
 - **退出码**（§7）：`0` 成功 · `1` 执行失败 · `2` 用法错误 · `3` 预检失败 · 第二次 SIGINT 后 `130`。
-- **`--json`** → stdout 是纯 JSON（诊断走 stderr）：`status --json`、`doctor --json`，以及 `install/switch/update --dry-run --json` → `{tool,version,command,desired,plan}`，其中 `plan = {need:{l1,l2,l3,deploy,host,tray}, steps, needsApply}`。**这三个命令 `--json` 而不加 `--dry-run` 是用法错误（exit 2）**——stdout 绝不混人类文本与 JSON。
+- **`--json`** → stdout 是纯 JSON（诊断走 stderr）：`status --json`、`doctor --json`，以及 `install/switch/update --dry-run --json` → `{tool,version,command,desired,plan}`，其中 `plan = {need:{l1,l2,l3,deploy,host,tray,hidpi}, steps, needsApply}`（`hidpi` 同时覆盖 opt-in 收敛与 opt-out 撤销）。**这三个命令 `--json` 而不加 `--dry-run` 是用法错误（exit 2）**——stdout 绝不混人类文本与 JSON。
 - **非交互**：`-y/--yes`；干净序列 = `--dry-run --json` → 断言 `plan.needsApply` → `-y`。无 tty 时自动用 `sudo -n`（需要给 pacman 配 NOPASSWD sudoers；绝不 run as root）。
 - **完成信号**：`plan.needsApply:false`（或 `status` 无差异）= 没事可做——停止，别再跑。
 - **`update --self`**：替换二进制（备份旧的、按 `checksums.txt` 校验 sha256、原子替换）。

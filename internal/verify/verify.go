@@ -65,6 +65,16 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 		Detail: dropInDetail(c)})
 	out = append(out, Check{Name: "托盘 pin", OK: c.PinnedHasFc,
 		Detail: map[bool]string{true: "omarchy.tray.pinned 含 Fcitx", false: "omarchy.tray.pinned 不含 Fcitx"}[c.PinnedHasFc]})
+	if !d.X11HiDPI {
+		out = append(out, Check{Name: "X11 HiDPI（可选）", OK: true,
+			Detail: "未启用：Xft.dpi 是全局 XWayland 资源；仅在确认旧 X11 应用候选框过小时用 install --x11-hidpi 启用。混合 DPI 多屏无法同时精确。"})
+	} else if c.X11Available {
+		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK && c.X11DPIActual == c.X11DPIDesired,
+			Detail: fmt.Sprintf("Xft.dpi 期望=%d 实际=%d（scale=%.2f）", c.X11DPIDesired, c.X11DPIActual, c.X11Scale)})
+	} else {
+		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK,
+			Detail: "未检测到 XWayland；已收敛 Xresources 与缩放监听，待 X11 会话发布"})
+	}
 
 	// 5. candidate-window theming (§6.6)
 	out = append(out, themeCheck(c))

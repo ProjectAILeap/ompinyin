@@ -79,6 +79,17 @@ func TestApplyInstallFlagsKeepsBaseline(t *testing.T) {
 		}
 	})
 
+	t.Run("x11 hidpi requires an explicit flag and persists", func(t *testing.T) {
+		got := applyInstallFlags(dspBaseline, installFlags{X11HiDPI: true}, map[string]bool{"x11-hidpi": true})
+		if !got.X11HiDPI {
+			t.Fatal("--x11-hidpi was not applied")
+		}
+		got = applyInstallFlags(got, installFlags{NoX11HiDPI: true}, map[string]bool{"no-x11-hidpi": true})
+		if got.X11HiDPI {
+			t.Fatal("--no-x11-hidpi was not applied")
+		}
+	})
+
 	t.Run("--dsp none clears the extra", func(t *testing.T) {
 		got := applyInstallFlags(dspBaseline, installFlags{DSP: "none"}, map[string]bool{"dsp": true})
 		if got.Primary != "quanpin" || len(got.Extra) != 0 {
