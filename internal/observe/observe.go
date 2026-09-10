@@ -15,6 +15,7 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/pkgs"
 	"github.com/ProjectAILeap/ompinyin/internal/service"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
+	"github.com/ProjectAILeap/ompinyin/internal/theme"
 	"github.com/ProjectAILeap/ompinyin/internal/tray"
 )
 
@@ -72,6 +73,14 @@ type Current struct {
 	Pinned       []string
 	PinnedHasFc  bool
 	ShellRunning bool
+
+	// L4 candidate-window theming (§6.6): files point at the omarchy theme
+	// (ConfOK/HookOK), the generated theme dir is in place (DirOK), and the
+	// managed bytes already equal the desired content (Equal).
+	ThemeConfOK bool
+	ThemeHookOK bool
+	ThemeDirOK  bool
+	ThemeEqual  bool
 
 	BuildMissing []string
 
@@ -137,6 +146,11 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 		}
 	}
 	c.ShellRunning = tray.ShellRunning()
+
+	// L4 candidate-window theming (§6.6)
+	th := theme.Observe(state.Home(), st)
+	c.ThemeConfOK, c.ThemeHookOK, c.ThemeDirOK = th.ConfOK, th.HookOK, th.DirOK
+	c.ThemeEqual = th.ConfEqual && th.HookEqual
 
 	// build artifacts (only meaningful when data dir exists)
 	if _, err := os.Stat(c.RimeDir); err == nil {

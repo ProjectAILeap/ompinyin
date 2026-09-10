@@ -17,6 +17,7 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/selfup"
 	"github.com/ProjectAILeap/ompinyin/internal/service"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
+	"github.com/ProjectAILeap/ompinyin/internal/theme"
 	"github.com/ProjectAILeap/ompinyin/internal/tray"
 	"github.com/ProjectAILeap/ompinyin/internal/verify"
 )
@@ -258,6 +259,7 @@ type HostReport struct {
 	DropInOK        bool     `json:"dropInOK"`
 	PinnedHasFcitx  bool     `json:"pinnedHasFcitx"`
 	ShellRunning    bool     `json:"shellRunning"`
+	ThemeOK         bool     `json:"themeOK"`
 	BuildMissing    []string `json:"buildMissing,omitempty"`
 	OrphanManaged   []string `json:"orphanManaged,omitempty"`
 	LegacyDirExists bool     `json:"legacyDirExists"`
@@ -268,6 +270,7 @@ func planReportOf(p *plan.Plan) PlanReport {
 		Need: map[string]bool{
 			"l1": p.NeedL1, "l2": p.NeedL2, "l3": p.NeedL3,
 			"deploy": p.NeedDeploy, "host": p.NeedHost, "tray": p.NeedTray,
+			"theme": p.NeedTheme,
 		},
 		Steps:      stepsOf(p),
 		NeedsApply: p.NeedsApply(),
@@ -288,7 +291,9 @@ func hostReportOf(c *observe.Current) HostReport {
 		PackagesMissing: c.PackagesMissing, RimeDataExists: c.RimeDataExists,
 		GramFileExists: c.GramFileExists, ProfileHasRime: c.ProfileHasRime,
 		HotkeyOK: c.HotkeyOK, DropInOK: c.DropInOK, PinnedHasFcitx: c.PinnedHasFc,
-		ShellRunning: c.ShellRunning, BuildMissing: c.BuildMissing,
+		ShellRunning:  c.ShellRunning,
+		ThemeOK:       c.ThemeConfOK && c.ThemeHookOK && c.ThemeDirOK,
+		BuildMissing:  c.BuildMissing,
 		OrphanManaged: c.Orphans, LegacyDirExists: c.LegacyDirExists,
 	}
 }
@@ -370,6 +375,29 @@ type UninstallArgs struct {
 	Yes    bool
 }
 
+// RemoveThemeFile removes one theming file following the §5.1 ownership
+// protocol: tool-written files go silently, hand-edited ones ask first.
+func removeThemeFile(opts Options, st *state.State, rel, label string) error {
+	abs := filepath.Join(state.Home(), filepath.FromSlash(rel))
+	status := theme.Classify(abs, st.ManagedFiles[rel])
+	if _, err := os.Stat(abs); os.IsNotExist(err) {
+		delete(st.ManagedFiles, rel)
+		return nil
+	}
+	if status == patches.StatusUserModified || status == patches.StatusForeign {
+		if !opts.confirm(label + " 被手改过，确认删除？") {
+			opts.outf("[跳过] 保留 " + label)
+			return nil
+		}
+	}
+	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	delete(st.ManagedFiles, rel)
+	opts.outf("[完成] 删除 " + label)
+	return nil
+}
+
 // Uninstall removes the managed footprint (§7): managed files deleted (with
 // ownership protocol), profile de-registered, tray restored, dedicated
 // drop-in removed. System packages and the data dir stay.
@@ -389,9 +417,28 @@ func Uninstall(opts Options) int {
 
 	rimeDir := observe.DataDir()
 
+	// candidate-window theming (§6.6): classicui.conf + theme-set hook + the
+	// hook-generated theme dir (not ledger-tracked — delete it explicitly)
+	if err := removeThemeFile(opts, st, theme.ConfRelPath, "classicui.conf"); err != nil {
+		opts.errf("[失败] 删除 classicui.conf：%v", err)
+		return ExitExecFail
+	}
+	if err := removeThemeFile(opts, st, theme.HookRelPath, "theme-set 钩子 (fcitx5-theme)"); err != nil {
+		opts.errf("[失败] 删除 theme-set 钩子：%v", err)
+		return ExitExecFail
+	}
+	if err := os.RemoveAll(theme.ThemeDir(state.Home())); err != nil {
+		opts.errf("[警告] 删除候选框主题目录失败：%v", err)
+	}
+
 	// managed files: only delete tool-written ones without asking; hand-edited
-	// ones follow the ownership protocol (§5.1)
+	// ones follow the ownership protocol (§5.1). Keys with a path separator are
+	// NOT rime-dir files (candidate-window theming etc., handled above), and
+	// must never be resolved under rimeDir.
 	for rel, ledger := range st.ManagedFiles {
+		if filepath.Base(rel) != rel {
+			continue
+		}
 		abs := filepath.Join(rimeDir, rel)
 		if patches.Classify(abs, ledger) == patches.StatusManaged {
 			if err := patches.RemoveFile(abs, st); err != nil {
@@ -465,6 +512,10 @@ func Uninstall(opts Options) int {
 	if !tray.ShellRunning() {
 		opts.outf("[希望] 外壳未运行，托盘还原已写入磁盘；外壳启动时将自动应用")
 	}
+
+	// hot-reload so a running fcitx5 drops the themed candidate window and
+	// falls back to the default (uninstall restarted it above when active)
+	_ = theme.Reload()
 
 	if err := state.Remove(); err == nil {
 		opts.outf("[完成] 状态清单已清除")

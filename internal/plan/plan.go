@@ -35,12 +35,13 @@ type Plan struct {
 	NeedDeploy bool // rime_deployer --build must run
 	NeedHost   bool // profile / hotkey / drop-in work
 	NeedTray   bool // notificationitem drop-in or the Fcitx pin
+	NeedTheme  bool // candidate-window theming work (§6.6)
 }
 
 // NeedsApply reports whether any mutating layer has work. L5 is read-only and
 // never counts, so a converged host re-run returns false and skips the backup.
 func (p *Plan) NeedsApply() bool {
-	return p.NeedL1 || p.NeedL2 || p.NeedL3 || p.NeedDeploy || p.NeedHost || p.NeedTray
+	return p.NeedL1 || p.NeedL2 || p.NeedL3 || p.NeedDeploy || p.NeedHost || p.NeedTray || p.NeedTheme
 }
 
 // New returns an empty plan.
@@ -154,8 +155,16 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 		p.Add("L4", "顶栏图标已 pin", false)
 	}
 
+	// L4 candidate-window theming (§6.6)
+	p.NeedTheme = !c.ThemeEqual || !c.ThemeDirOK
+	if p.NeedTheme {
+		p.Add("L4", "候选框主题：classicui.conf→omarchy + theme-set 钩子 + 立即按当前 Omarchy 主题生成", true)
+	} else {
+		p.Add("L4", "候选框已跟随 Omarchy 主题", false)
+	}
+
 	// L5 verify (read-only)
-	p.Add("L5", "复核：build 产物 / grammar 编入 / IM 三态 / 托盘可见", true)
+	p.Add("L5", "复核：build 产物 / grammar 编入 / IM 三态 / 托盘可见 / 候选框主题", true)
 	return p
 }
 

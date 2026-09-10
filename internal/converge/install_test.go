@@ -22,6 +22,7 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/selfup"
 	"github.com/ProjectAILeap/ompinyin/internal/service"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
+	"github.com/ProjectAILeap/ompinyin/internal/theme"
 	"github.com/ProjectAILeap/ompinyin/internal/tray"
 )
 
@@ -51,9 +52,10 @@ func jsonSlice(s string) []any {
 
 // fakeHost wires all exec seams to an in-memory fake host (T0, §15).
 type fakeHost struct {
-	unitActive bool
-	barSets    [][]string
-	buildRuns  int
+	unitActive  bool
+	barSets     [][]string
+	buildRuns   int
+	themeReload int
 }
 
 func setupFakeHost(t *testing.T, home string) *fakeHost {
@@ -131,6 +133,20 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 	// fake omarchy-shell: alive
 	tray.ShellRunning = func() bool { return true }
 
+	// fake candidate-window theming: theme.Run emulates the hook by writing a
+	// populated theme dir (the real hook reads colors.toml + omarchy-theme-color,
+	// neither of which exists on the fake host); Reload counts hot reloads; the
+	// UI font is deterministic so desired-byte comparisons stay stable.
+	theme.Run = func(name string, args ...string) error {
+		dir := theme.ThemeDir(home)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "theme.conf"), []byte("[Metadata]\nName=Omarchy\n"), 0o644)
+	}
+	theme.Reload = func() error { h.themeReload++; return nil }
+	theme.CurrentFont = func() string { return "TestFont" }
+
 	// tag resolution: never touch the network in T0 (stub = resolution
 	// unavailable → unpinned releases/latest fallback, cache-seeded)
 	assets.ResolveStableTag = func(ctx context.Context) string { return "" }
@@ -193,6 +209,9 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 		deploy.CompileSchemas = nil
 		tray.ShellRunning = nil
 		tray.Run = nil
+		theme.Run = nil
+		theme.Reload = nil
+		theme.CurrentFont = nil
 		assets.ResolveStableTag = assetsResolveStableTagProd
 	})
 	return h
@@ -301,6 +320,25 @@ func TestInstallConvergesDefaultTerminalState(t *testing.T) {
 	} else if len(pinned) > 1 {
 		t.Errorf("unexpected extra pins: %v", pinned)
 	}
+	// L4 candidate-window theming (§6.6): classicui.conf points at the theme
+	// and the theme-set hook + generated dir are in place
+	cb2, _ := os.ReadFile(theme.ConfPath(home))
+	if !strings.HasPrefix(string(cb2), "# managed by ompinyin") || !strings.Contains(string(cb2), "Theme=omarchy") {
+		t.Errorf("classicui.conf not converged:\n%s", cb2)
+	}
+	if !strings.Contains(string(cb2), "Font=TestFont 12") {
+		t.Errorf("classicui.conf missing the Omarchy font:\n%s", cb2)
+	}
+	hb, _ := os.ReadFile(theme.HookPath(home))
+	if !strings.HasPrefix(string(hb), "# managed by ompinyin") || !strings.Contains(string(hb), "ReloadAddonConfig") {
+		t.Errorf("theme-set hook not installed:\n%s", hb)
+	}
+	if _, err := os.Stat(filepath.Join(theme.ThemeDir(home), "theme.conf")); err != nil {
+		t.Errorf("theme dir not generated: %v", err)
+	}
+	if h.themeReload != 1 {
+		t.Errorf("fcitx5 theme reload ran %d times, want 1", h.themeReload)
+	}
 	// deploy ran once for --build only (no per-schema --compile)
 	if h.buildRuns != 1 {
 		t.Errorf("rime lazy deploy ran %d times, want 1", h.buildRuns)
@@ -344,8 +382,15 @@ func TestInstallIdempotent(t *testing.T) {
 	if !strings.Contains(out.String(), "已是目标内容") {
 		t.Errorf("second run must skip byte-identical managed files:\n%s", out.String())
 	}
+	if !strings.Contains(out.String(), "[跳过] L4 候选框已跟随 Omarchy 主题") {
+		t.Errorf("second run must skip the candidate-window theme:\n%s", out.String())
+	}
 	if h.buildRuns != 1 {
 		t.Errorf("rime deploy ran %d times, want 1 (second run must skip the stop window)", h.buildRuns)
+	}
+	// the theming reload must not re-fire on an idempotent run
+	if h.themeReload != 1 {
+		t.Errorf("theme hot reload ran %d times, want 1", h.themeReload)
 	}
 	// the pin must be idempotent: second re-convergence does not change it
 	sj, _ := os.ReadFile(tray.ShellJSONPath(home))
@@ -785,7 +830,7 @@ func TestStatusJSON(t *testing.T) {
 	if rep.Plan.NeedsApply {
 		t.Errorf("converged host must report needsApply=false: %+v", rep.Plan)
 	}
-	if !rep.Host.DropInOK || !rep.Host.PinnedHasFcitx {
+	if !rep.Host.DropInOK || !rep.Host.PinnedHasFcitx || !rep.Host.ThemeOK {
 		t.Errorf("host report wrong: %+v", rep.Host)
 	}
 	if rep.Version == "" {
@@ -914,5 +959,91 @@ func TestUpdateSelfDryRun(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "自升级") {
 		t.Errorf("self dry-run not reported:\n%s", out.String())
+	}
+}
+
+// TestThemeOwnershipProtocol: a hand-edited classicui.conf must trip the §5.1
+// protocol (refusal aborts, consent overwrites after backup) exactly like a
+// hand-edited rime managed file.
+func TestThemeOwnershipProtocol(t *testing.T) {
+	home := t.TempDir()
+	setupFakeHost(t, home)
+	seedCache(t, home)
+
+	opts, out := newTestOpts()
+	if c := Install(catalog.DefaultDesired(), false, opts); c != ExitOK {
+		t.Fatalf("first install exit=%d\n%s", c, out.String())
+	}
+
+	// user hand-edits classicui.conf
+	confPath := theme.ConfPath(home)
+	if err := os.WriteFile(confPath, []byte("Theme=default-dark\nFont=Sans 10\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// refusal (empty stdin, no --yes) must abort with exit 1
+	abort := Options{Stdout: out, Stderr: out, Stdin: strings.NewReader("n\n")}
+	if c := Install(catalog.DefaultDesired(), false, abort); c != ExitExecFail {
+		t.Fatalf("refused overwrite exit=%d, want 1\n%s", c, out.String())
+	}
+	if b, _ := os.ReadFile(confPath); string(b) != "Theme=default-dark\nFont=Sans 10\n" {
+		t.Error("user edit was clobbered without consent")
+	}
+
+	// consent (--yes) overwrites after backup
+	opts2, out2 := newTestOpts()
+	if c := Install(catalog.DefaultDesired(), false, opts2); c != ExitOK {
+		t.Fatalf("consented install exit=%d\n%s", c, out2.String())
+	}
+	b, _ := os.ReadFile(confPath)
+	if !strings.Contains(string(b), "Theme=omarchy") {
+		t.Errorf("classicui.conf not restored:\n%s", b)
+	}
+	matches, _ := filepath.Glob(filepath.Join(home, ".local", "state", "ompinyin", "backup-*", ".config", "fcitx5", "conf", "classicui.conf"))
+	if len(matches) == 0 {
+		t.Fatal("no backup of user-edited classicui.conf")
+	}
+	if b, _ := os.ReadFile(matches[len(matches)-1]); string(b) != "Theme=default-dark\nFont=Sans 10\n" {
+		t.Errorf("backup content wrong: %s", b)
+	}
+}
+
+// TestUninstallRemovesThemeFootprint: uninstall must delete classicui.conf,
+// the theme-set hook and the hook-generated theme dir, and drop the ledger
+// records — leaving fcitx5 with the default candidate window.
+func TestUninstallRemovesThemeFootprint(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	seedCache(t, home)
+
+	opts, out := newTestOpts()
+	if c := Install(catalog.DefaultDesired(), false, opts); c != ExitOK {
+		t.Fatalf("install exit=%d\n%s", c, out.String())
+	}
+	for _, p := range []string{theme.ConfPath(home), theme.HookPath(home), filepath.Join(theme.ThemeDir(home), "theme.conf")} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("precondition %s missing: %v", p, err)
+		}
+	}
+
+	if c := Uninstall(opts); c != ExitOK {
+		t.Fatalf("uninstall exit=%d\n%s", c, out.String())
+	}
+	if _, err := os.Stat(theme.ConfPath(home)); !os.IsNotExist(err) {
+		t.Errorf("classicui.conf left behind")
+	}
+	if _, err := os.Stat(theme.HookPath(home)); !os.IsNotExist(err) {
+		t.Errorf("theme-set hook left behind")
+	}
+	if _, err := os.Stat(theme.ThemeDir(home)); !os.IsNotExist(err) {
+		t.Errorf("theme dir left behind")
+	}
+	if _, err := os.Stat(state.Path()); !os.IsNotExist(err) {
+		t.Error("state.json not removed by uninstall")
+	}
+	// a running fcitx5 must be told to drop the theme (would otherwise keep it
+	// in memory until restart)
+	if h.themeReload == 0 {
+		t.Error("uninstall must hot-reload fcitx5 to drop the themed candidate window")
 	}
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/profile"
 	"github.com/ProjectAILeap/ompinyin/internal/service"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
+	"github.com/ProjectAILeap/ompinyin/internal/theme"
 	"github.com/ProjectAILeap/ompinyin/internal/tray"
 	"github.com/ProjectAILeap/ompinyin/internal/verify"
 )
@@ -327,6 +328,13 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 
 	// ---- L4 tray pin: read → merge → set (ADR 13) ----
 	if code := traySet(opts, backupDir); code != ExitOK {
+		return code
+	}
+
+	// ---- L4 candidate-window theming (§6.6): classicui.conf + theme-set hook
+	// + generate now + hot reload. Outside the stop window: fcitx5 reads these
+	// without a restart (ReloadAddonConfig), unlike profile/hotkey/drop-in. ----
+	if code := themeApply(opts, backupDir, st); code != ExitOK {
 		return code
 	}
 
@@ -717,6 +725,97 @@ func traySet(opts Options, backupDir string) int {
 }
 
 // ---------------------------------------------------------------------------
+// L4 candidate-window theming (§6.6)
+// ---------------------------------------------------------------------------
+
+// themeApply converges the candidate-window theming terminal state:
+// classicui.conf + theme-set hook (both ledger-tracked, §5.1 ownership
+// protocol), immediate generation from the current Omarchy theme, and a DBus
+// hot reload of the classicui addon. It never touches the stop window: fcitx5
+// reads these files on reload, no restart needed.
+func themeApply(opts Options, backupDir string, st *state.State) int {
+	home := state.Home()
+	confContent := theme.ConfContent(theme.CurrentFont())
+	hookContent := theme.HookContent()
+
+	// converged already: skip (also keeps a reconverged re-run a true no-op)
+	if b, err := os.ReadFile(theme.ConfPath(home)); err == nil && string(b) == confContent {
+		if hb, err := os.ReadFile(theme.HookPath(home)); err == nil && string(hb) == hookContent {
+			if theme.ThemeDirPopulated(home) {
+				opts.outf("[跳过] L4 候选框已跟随 Omarchy 主题")
+				return ExitOK
+			}
+		}
+	}
+
+	changed, code := writeThemeFile(opts, backupDir, st, theme.ConfPath(home), theme.ConfRelPath, confContent, "classicui.conf", 0)
+	if code != ExitOK {
+		return code
+	}
+	if changed {
+		opts.outf("[完成] L4 classicui.conf → Theme=%s", theme.ThemeName)
+	}
+	if _, code := writeThemeFile(opts, backupDir, st, theme.HookPath(home), theme.HookRelPath, hookContent, "theme-set 钩子 (fcitx5-theme)", 0o755); code != ExitOK {
+		return code
+	}
+
+	// 立即按当前 Omarchy 主题生成（首次安装/目录缺失/换主题后未触发钩子时；幂等）
+	if err := theme.Generate(home); err != nil {
+		opts.errf("[失败] L4 候选框主题生成：%v", err)
+		return ExitExecFail
+	}
+	opts.outf("[完成] L4 候选框主题已按当前 Omarchy 主题生成")
+
+	// the ownership/hashes describe bytes on disk now — persist before the reload
+	saveLedger(opts, st)
+
+	// hot-reload the classicui addon (`fcitx5-remote -r` reloads only the
+	// global config and would not re-read the theme — verified on host)
+	if err := theme.Reload(); err != nil {
+		opts.errf("[提示] L4 热重载 fcitx5 候选框主题失败（服务重启时会自然生效）：%v", err)
+	} else {
+		opts.outf("[完成] L4 fcitx5 已热重载候选框主题")
+	}
+	return ExitOK
+}
+
+// writeThemeFile applies the §5.1 ownership protocol to one theming file and
+// records the new hash in the ledger (keyed by the home-relative path).
+func writeThemeFile(opts Options, backupDir string, st *state.State, abs, rel, content, label string, mode os.FileMode) (bool, int) {
+	ledger := st.ManagedFiles[rel]
+	status := theme.Classify(abs, ledger)
+	if b, err := os.ReadFile(abs); err == nil && string(b) == content {
+		return false, ExitOK
+	}
+	switch status {
+	case patches.StatusAbsent, patches.StatusManaged:
+		// ok to rewrite
+	case patches.StatusUserModified, patches.StatusForeign:
+		if !opts.confirm(fmt.Sprintf("%s 是%s，覆盖前将备份。继续？", label, status)) {
+			opts.errf("[失败] 用户拒绝覆盖 %s；中止", label)
+			return false, ExitExecFail
+		}
+		if err := copyToBackup(backupDir, abs); err != nil {
+			opts.errf("[失败] 备份 %s 失败，拒绝覆盖：%v", label, err)
+			return false, ExitExecFail
+		}
+		opts.outf("[完成] %s 原内容已备份", label)
+	}
+	if err := state.WriteAtomic(abs, []byte(content)); err != nil {
+		opts.errf("[失败] 写 %s：%v", label, err)
+		return false, ExitExecFail
+	}
+	if mode != 0 {
+		if err := os.Chmod(abs, mode); err != nil {
+			opts.errf("[失败] chmod %s：%v", label, err)
+			return false, ExitExecFail
+		}
+	}
+	st.ManagedFiles[rel] = state.HashBytes([]byte(content))
+	return true, ExitOK
+}
+
+// ---------------------------------------------------------------------------
 // backup (§8)
 // ---------------------------------------------------------------------------
 
@@ -726,14 +825,14 @@ func traySet(opts Options, backupDir string) int {
 func obackup(opts Options, d catalog.Desired, cur *observe.Current, st *state.State, p *plan.Plan) (string, error) {
 	var targets []string
 	if opts.FullBackup {
-		targets = append(targets, cur.RimeDir, observe.FcitxConfigDir(), tray.ShellJSONPath(state.Home()))
+		targets = append(targets, cur.RimeDir, observe.FcitxConfigDir(), tray.ShellJSONPath(state.Home()), theme.ThemeDir(state.Home()))
 	} else if p.NeedsApply() {
 		for rel, status := range cur.Managed {
 			if status == patches.StatusUserModified || status == patches.StatusForeign {
 				targets = append(targets, filepath.Join(cur.RimeDir, rel))
 			}
 		}
-		for _, f := range []string{observe.ProfilePath(), observe.ConfigPath(), tray.ShellJSONPath(state.Home()), cur.DropInPath} {
+		for _, f := range []string{observe.ProfilePath(), observe.ConfigPath(), tray.ShellJSONPath(state.Home()), cur.DropInPath, theme.ConfPath(state.Home()), theme.HookPath(state.Home())} {
 			if _, err := os.Stat(f); err == nil {
 				targets = append(targets, f)
 			}

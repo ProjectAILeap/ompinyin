@@ -9,6 +9,7 @@
 ☑ 雾凇拼音（全拼）        —— 默认输入方案
 ☑ 万象 LMDG 整句模型     —— 智能整句联想（约 420MB）
 ☑ 顶栏输入法图标         —— 常驻顶栏，无需点「◀」
+☑ 候选框跟随 Omarchy 主题 —— 圆角候选框自动配当前主题色，换主题即刷新
 双拼可选：--dsp zrm | flypy | mspy | sogou | abc | ziguang | jiajia
 ```
 
@@ -62,6 +63,14 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 - 顶栏图标切到 rime 后，右键菜单也能调这些开关（简繁 / 中英标点 / 全半角），与 F4 等价。
 - 候选词每页 9 个，`,` / `.` 翻页。
 
+## 候选框跟随 Omarchy 主题
+
+安装后 fcitx5 候选框（顶栏输入法图标之外的候选词窗口）**自动**采用当前 Omarchy 主题配色：深色圆角面板 + 主题 accent 高亮选中候选，对比色文字自动计算（亮 accent 配深字、暗 accent 配浅字），换主题即自动刷新，无需重启。
+
+- 实现：`~/.config/omarchy/hooks/theme-set.d/fcitx5-theme`（`omarchy theme set` 触发生成 + 热重载）+ `~/.config/fcitx5/conf/classicui.conf`（指向 `omarchy` 主题）+ 生成目录 `~/.local/share/fcitx5/themes/omarchy/`。
+- 都是受管文件：手改会在下次收敛时按所有者协议提示（确认后先备份再覆盖）；`uninstall` 一并还原默认候选框。
+- 面板质感想再亮一档：把钩子里的 `bg` 从 `background` 换成 `lighter_background`。
+
 ## 常用命令
 
 | 目标 | 命令 |
@@ -104,6 +113,7 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 - **首次安装会接管 `default.custom.yaml`**：已有 rime 配置时把它替换为受管内容（候选数 9、`,` `.` 翻页；`Shift` 等手感设置消失），改动前备份到 `backup-<ts>/`。
 - **手改受管文件会被覆盖**：由工具生成的文件请写独立的非受管补丁，别手改。
 - **Foot终端全屏输入时可能出现候选框不可见**：Hyprland 渲染器问题，本工具范围外（桌面窗口正常）。
+- **候选框主题依赖当前 Omarchy 主题颜色**（`~/.local/state/omarchy/current/theme/colors.toml`）：它不存在时（极少见）候选框保持 fcitx5 默认外观，`ompinyin doctor` 会提示「候选框主题」未达标。
 
 ## 关键路径
 
@@ -111,6 +121,7 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 |---|---|
 | Rime 数据目录 | `~/.local/share/fcitx5/rime` |
 | fcitx5 配置 | `~/.config/fcitx5/` |
+| 候选框主题钩子 / 生成目录 | `~/.config/omarchy/hooks/theme-set.d/` ・ `~/.local/share/fcitx5/themes/omarchy/` |
 | 资产缓存 | `~/.cache/ompinyin/` |
 | 状态清单 | `~/.local/state/ompinyin/state.json` |
 

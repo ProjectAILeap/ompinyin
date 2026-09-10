@@ -22,6 +22,7 @@
 | 输入布局 | **全拼** | `schema_list` 只含 `rime_ice`，F4 菜单干净 |
 | 整句模型 | **万象 LMDG** `wanxiang-lts-zh-hans.gram` | 挂到启用方案上，不是万象拼音方案 |
 | 顶栏图标 | **显示且固定（必做）** | 去掉 `--disable notificationitem` + pin `Fcitx`。无 `--no-tray` |
+| 候选框 | **跟随当前 Omarchy 主题（默认）** | classicui.conf→omarchy 主题 + theme-set 钩子，换主题自动刷新 |
 | 宿主 | fcitx5-rime + Omarchy 用户服务 | 一行环境变量都不写 |
 
 ### 1.3 非目标
@@ -114,6 +115,7 @@ if deploy(产物缺失/配置变更) or 宿主(profile/hotkey/drop-in) 有工作
   start fcitx5                       # defer 守门：任何提前返回都会 start，start 失败 → 退出码 1
   SaveLedger
 L4 tray pin（数组直接写入 shell.json + 重启外壳刷新 SNI）
+L4 候选框主题（classicui.conf + theme-set 钩子 + 立即生成 + DBus 热重载）
 L5 verify（只读，build 缺失为硬失败）
 if L5 未达终态: SaveLedger（只存事实）; return 1     # 不推进 Desired
 write state.json（含 Desired）+ 备份轮转（留最近 5 个）
@@ -130,8 +132,8 @@ unlock
 | L2 数据资产 | 雾凇 `full.zip` + 万象 `.gram`，带版本号和 sha256 | 下载 → 校验 → 解压/落位 |
 | L3 配置覆盖 | 受管 `*.custom.yaml`（集合随 Layout 变） | 整文件生成（所有权协议见 §5） |
 | （缝）部署 | `rime_deployer --build $RIME /usr/share/rime-data $RIME/build` | **fcitx5 必须已停** |
-| L4 宿主集成 | profile、触发键、drop-in、start、**顶栏图标** | 一个 stop 窗口（见 §6.0） |
-| L5 验证 | 编译产物、模型编入、IM 三态、托盘可见、人工 checklist | **只读** |
+| L4 宿主集成 | profile、触发键、drop-in、start、**顶栏图标、候选框主题** | 一个 stop 窗口（见 §6.0）；候选框主题在 stop 窗口之外热重载 |
+| L5 验证 | 编译产物、模型编入、IM 三态、托盘可见、候选框主题、人工 checklist | **只读** |
 
 > **L1 仓库（收敛不接管镜像）**：三个 L1 包都在 **`extra`** 仓库（`stable-mirror.omarchy.org/extra`）。`pacman -S` 的镜像来自系统 `/etc/pacman.d/mirrorlist` + `/etc/pacman.conf`，`install`/`update`/`switch` 收敛**不接管、不修改**。镜像改动的唯一入口是独立的 **`source`** 命令（§7）。`--mirror` 只作用于 **L2 资产**，对 L1 无效。Omarchy 官方 `stable-mirror.omarchy.org` / `pkgs.omarchy.org` 走 Cloudflare CDN，大陆直连可能不稳；处理方案：代理 / `XferCommand` 重试续传 / `source --preset cn` 把 `core`+`extra` 指向国内 stock-Arch 镜像——注意 stable 是**锁版本快照**有漂移风险，`[omarchy]` 仓库**无国内镜像**。
 
@@ -151,6 +153,7 @@ internal/patches   L3：受管 custom.yaml 模板生成 + 所有权哈希记账
 internal/profile   fcitx5 profile INI 宽容读/严格写
 internal/hotkey    [Hotkey] 写入 + Shift_L 白名单校验
 internal/tray      L4 顶栏：专用 drop-in + shell.json pinned 读/并/写数组 + 重启外壳
+internal/theme     L4 候选框主题：classicui.conf + theme-set 钩子 + 生成目录 + 热重载
 internal/deploy    rime_deployer --build $RIME /usr/share/rime-data $RIME/build
 internal/service   systemctl --user 封装（omarchy-fcitx5 优先）
 internal/state     ~/.local/state/ompinyin/state.json 状态清单
@@ -342,6 +345,22 @@ fcitx5 SNI 的 `Id` = **`Fcitx`**（`Tray.qml` 用 `pinnedIds.indexOf(item.id)` 
 
 只写 `~/.local/share/fcitx5/rime`。`~/.config/fcitx/rime` 是历史兼容副本，本工具不写；`clean --legacy` 可删。
 
+### 6.6 候选框跟随 Omarchy 主题（默认终态）
+
+候选框（fcitx5 classicui 候选词窗口）**默认**跟随当前 Omarchy 主题配色，换主题即自动刷新、无需重启 fcitx5。**所有权分工**——颜色映射逻辑只有一份（在钩子脚本里，Go 侧不重复实现）：
+
+| 谁拥有 | 内容 | 说明 |
+|---|---|---|
+| ompinyin（受管、记账） | `~/.config/fcitx5/conf/classicui.conf` | 整文件生成：`Theme=omarchy` / `UseDarkTheme=False` / `UseAccentColor=False` + UI 字体；走 §5.1 所有权协议 |
+| ompinyin（受管、记账） | `~/.config/omarchy/hooks/theme-set.d/fcitx5-theme` | bash 钩子，`omarchy theme set` 触发；`omarchy-hook` 以 `bash <file>` 运行 |
+| 钩子（运行时） | `~/.local/share/fcitx5/themes/omarchy/` | 从当前 `colors.toml` 生成 theme.conf + 圆角 SVG（面板/高亮/翻页箭头）；**不入账**（换主题字节合法变化），uninstall 显式删除 |
+
+- **颜色映射**（验证过，见 fcitx5 theme.cpp `populateColor`）：面板=`background`+`lighter_background` 边框；选中候选=`accent` 圆角高亮，文字按亮度**自动取对比色**（亮 accent→深字，暗 accent→浅字；`lum()` = ITU-R BT.601）；其余候选/序号/注释=`foreground`/`dark_foreground`；预编辑高亮=`selection`。SVG 9-slice（Radius=边框 margin），librsvg 矢量缩放不糊。
+- **热重载**：`fcitx5-remote -r` 只重载全局配置、**不会**重读 `classicui.conf`/主题（真机验证过：重载后仍旧主题）。必须走 DBus `org.fcitx.Fcitx.Controller1.ReloadAddonConfig classicui`（fcitx5-configtool 同款）；钩子与收敛后的 `theme.Reload` 都用它，fcitx5 未跑时静默。
+- **收敛时序**：在 stop 窗口**之外**（L4 tray 之后、L5 之前）——这些文件 reload 即生效，无需重启。首次安装立即跑一次钩子按当前主题生成；此后换主题由钩子自己完成，`status` 不该报漂移（生成目录不入账）。
+- **受管文件的字体**：`Font`/`MenuFont` 取自 `omarchy-font-current`（Pango 会经 fontconfig 回退 CJK 字体）；取不到用 `Sans`。
+- **边界**：当前 Omarchy 主题颜色（`~/.local/state/omarchy/current/theme/colors.toml` + `omarchy-theme-color`）缺失时钩子静默退出、候选框保持默认外观，`doctor` 报「候选框主题」未达标；UI 字体换肤（Tray/inline preedit 等）不属于本终态。
+
 ---
 
 ## 7. CLI
@@ -359,7 +378,7 @@ ompinyin switch --full                     # 全拼改回 schema_list[0]（已�
 ompinyin status                            # 现状 vs 终态 diff（含布局 / 资产版本 / 托盘）
 ompinyin doctor                            # 服务健康 / IM 三态 / 环境变量红线 / 触发键 / 顶栏图标 / 遗留目录
 ompinyin clean [--legacy]                  # 清缓存 / 老路径 ~/.config/fcitx/rime 的重复模型
-ompinyin uninstall                         # 受管文件删除 + profile 移除 rime + 托盘还原（系统包不动，数据目录留手动）
+ompinyin uninstall                         # 受管文件删除 + profile 移除 rime + 托盘还原 + 候选框主题还原（系统包不动，数据目录留手动）
 ompinyin source [--preset cn|upstream]     # 独立：配置 /etc/pacman.d/mirrorlist（sudo；见下）
 ompinyin version                           # 构建注入的版本号（--version / -v 同义）
 ompinyin status|doctor --json              # 机器可读输出（脚本 / CI 用）
@@ -501,3 +520,4 @@ v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 状态清单
 21. 备份失败即拒绝该次覆盖/删除（§5.1「先备份后写」是硬承诺，错误不得丢弃）。
 22. 预检必须拦 root 与缺失的 `rime_deployer`/`fcitx5-remote`/`omarchy`；`--os-override` 任意非空值即绕过 ID 检查并告警。
 23. SIGINT/SIGTERM 走 context 取消（第二次信号硬退出 130），使 stop 窗口的 defer 仍能收尾。
+24. 候选框主题：颜色映射唯一来源是 theme-set 钩子脚本（Go 侧不重复）；classicui.conf 与钩子入账、按 §5.1 协议覆盖；生成目录不入账但 uninstall 显式删除；热重载只用 `ReloadAddonConfig`（`fcitx5-remote -r` 不重读 addon 配置）。

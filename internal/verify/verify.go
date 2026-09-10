@@ -14,6 +14,7 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/observe"
 	"github.com/ProjectAILeap/ompinyin/internal/service"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
+	"github.com/ProjectAILeap/ompinyin/internal/theme"
 	"github.com/ProjectAILeap/ompinyin/internal/tray"
 )
 
@@ -65,7 +66,29 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 	out = append(out, Check{Name: "托盘 pin", OK: c.PinnedHasFc,
 		Detail: map[bool]string{true: "omarchy.tray.pinned 含 Fcitx", false: "omarchy.tray.pinned 不含 Fcitx"}[c.PinnedHasFc]})
 
+	// 5. candidate-window theming (§6.6)
+	out = append(out, themeCheck(c))
+
 	return out
+}
+
+// themeCheck reports whether the candidate window follows the Omarchy theme:
+// classicui.conf points at the omarchy theme, the theme-set hook is installed
+// (so theme changes stay applied), and the generated theme dir is in place.
+func themeCheck(c *observe.Current) Check {
+	ok := c.ThemeConfOK && c.ThemeHookOK && c.ThemeDirOK
+	var detail string
+	switch {
+	case !c.ThemeConfOK:
+		detail = "classicui.conf 未指向 " + theme.ThemeName + " 主题（或缺少 managed 头）——候选框不会跟随 Omarchy 配色"
+	case !c.ThemeHookOK:
+		detail = "theme-set 钩子缺失——换 Omarchy 主题后候选框不会自动刷新"
+	case !c.ThemeDirOK:
+		detail = "候选框主题目录未生成（重跑 ompinyin install，或用 omarchy theme set 触发钩子）"
+	default:
+		detail = "classicui.conf→omarchy；钩子已装；主题目录已生成"
+	}
+	return Check{Name: "候选框主题", OK: ok, Detail: detail}
 }
 
 // checkGrammarCompiled greps the compiled schema for the model language and

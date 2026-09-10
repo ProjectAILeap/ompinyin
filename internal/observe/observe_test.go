@@ -12,6 +12,7 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/pkgs"
 	"github.com/ProjectAILeap/ompinyin/internal/service"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
+	"github.com/ProjectAILeap/ompinyin/internal/theme"
 	"github.com/ProjectAILeap/ompinyin/internal/tray"
 )
 
@@ -26,10 +27,12 @@ func fakeHost(t *testing.T) string {
 		func() { pkgs.Run = origPkgsRun },
 		func() { service.Run = origServiceRun },
 		func() { tray.ShellRunning = origShellRunning },
+		func() { theme.CurrentFont = origThemeFont },
 	}
 	pkgs.Run = func(string, ...string) error { return nil }
 	service.Run = func(string, ...string) error { return errors.New("inactive") }
 	tray.ShellRunning = func() bool { return false }
+	theme.CurrentFont = func() string { return "TestFont" }
 	t.Cleanup(func() {
 		service.SystemUnitDirs = []string{"/etc/systemd/user", "/usr/lib/systemd/user"}
 		for _, r := range orig {
@@ -43,6 +46,7 @@ var (
 	origPkgsRun      = pkgs.Run
 	origServiceRun   = service.Run
 	origShellRunning = tray.ShellRunning
+	origThemeFont    = theme.CurrentFont
 )
 
 // TestCollectFreshHost: everything absent, so plan.Diff sees work.
@@ -59,6 +63,9 @@ func TestCollectFreshHost(t *testing.T) {
 	}
 	if c.DropInExists || c.DropInOK || c.PinnedHasFc || c.ProfileHasRime || c.HotkeyOK {
 		t.Errorf("empty fixture must not look converged: %+v", c)
+	}
+	if c.ThemeConfOK || c.ThemeHookOK || c.ThemeDirOK || c.ThemeEqual {
+		t.Errorf("empty fixture must not look theme-converged: %+v", c)
 	}
 	if len(c.Managed) != len(patches.ManagedFiles(d)) {
 		t.Errorf("managed map must cover every desired file: %d != %d", len(c.Managed), len(patches.ManagedFiles(d)))
@@ -102,6 +109,25 @@ func TestCollectConvergedHost(t *testing.T) {
 	if _, err := tray.WriteDropIn(home, "omarchy-fcitx5.service", tray.DropInContent); err != nil {
 		t.Fatal(err)
 	}
+	// L4 candidate-window theming (§6.6)
+	for rel, content := range map[string]string{
+		theme.ConfRelPath: theme.ConfContent("TestFont"),
+		theme.HookRelPath: theme.HookContent(),
+	} {
+		abs := filepath.Join(home, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(theme.ThemeDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(theme.ThemeDir(home), "theme.conf"), []byte("[Metadata]\nName=Omarchy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Dir(tray.ShellJSONPath(home)), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -120,6 +146,8 @@ func TestCollectConvergedHost(t *testing.T) {
 	for _, f := range patches.ManagedFiles(d) {
 		st.ManagedFiles[f.RelPath] = state.HashBytes([]byte(f.Content))
 	}
+	st.ManagedFiles[theme.ConfRelPath] = state.HashBytes([]byte(theme.ConfContent("TestFont")))
+	st.ManagedFiles[theme.HookRelPath] = state.HashBytes([]byte(theme.HookContent()))
 	c := Collect(d, st)
 
 	if !c.RimeDataExists || !c.GramFileExists {
@@ -127,6 +155,9 @@ func TestCollectConvergedHost(t *testing.T) {
 	}
 	if !c.ProfileHasRime || !c.HotkeyOK || !c.DropInOK || !c.PinnedHasFc {
 		t.Errorf("L4 not detected as converged: %+v", c)
+	}
+	if !c.ThemeConfOK || !c.ThemeHookOK || !c.ThemeDirOK || !c.ThemeEqual {
+		t.Errorf("theme not detected as converged: %+v", c)
 	}
 	if len(c.BuildMissing) != 0 {
 		t.Errorf("build artifacts not detected: %v", c.BuildMissing)

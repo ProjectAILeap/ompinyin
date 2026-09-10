@@ -1,6 +1,6 @@
 # AGENTS.md
 
-ompinyin 是一台声明式、幂等的 CLI，在 **Omarchy**（Arch + Hyprland + Wayland）上一键部署中文输入法栈：**雾凇全拼（`rime_ice`）+ 万象 LMDG 语法模型 + 顶栏 tray 图标**。双拼可用 `--dsp` 可选。
+ompinyin 是一台声明式、幂等的 CLI，在 **Omarchy**（Arch + Hyprland + Wayland）上一键部署中文输入法栈：**雾凇全拼（`rime_ice`）+ 万象 LMDG 语法模型 + 顶栏 tray 图标 + 候选框跟随 Omarchy 主题**。双拼可用 `--dsp` 可选。
 
 ```text
 语言：Go 1.27（仅标准库，go.mod 无依赖）· 许可证：MIT
@@ -17,7 +17,7 @@ ompinyin 是一台声明式、幂等的 CLI，在 **Omarchy**（Arch + Hyprland 
 | 修改收敛行为 / 加功能 | 「它做什么」→「关键陷阱」 | DESIGN §3 / §5 |
 | 新增 / 修复某 L1–L5 模块 | 「分层模型」→「关键陷阱」 | 该模块代码 + DESIGN §16 |
 | 写 / 扩展测试 | 「分层模型」→「测试」 | `setupFakeHost` fixture |
-| 改 fcitx5 / rime / tray | 「关键陷阱」→「边界」 | DESIGN §5 / §6 / §16 |
+| 改 fcitx5 / rime / tray / 候选框主题 | 「关键陷阱」→「边界」 | DESIGN §5 / §6 / §16 |
 | 加 CLI flag / 子命令 | 「CLI 契约」 | `cmd/ompinyin` 的 flag 解析 |
 | 用 Agent 脚本化 ompinyin | 「CLI 契约」 | exit codes + `--json` 结构 |
 
@@ -43,7 +43,7 @@ make release-check  # goreleaser check .goreleaser.yaml
 
 收敛命令（`install`/`update`/`switch`）把主机收敛到单一 `catalog.Desired` 终态：把观测到的 `current` 与 `desired` 做差，只应用差异，幂等、可 `--dry-run`。`status`/`doctor` 是**只读**的 diff / 体检报告——不落盘、不收敛，可安全随时运行。
 
-顶栏图标**不**属于 `Desired`；它是 L4 恒量：每次收敛都启用 `notificationitem` **并** pin `Fcitx`。**没有** `--tray-pin`/`--no-tray` 这个 flag。
+顶栏图标**不**属于 `Desired`；它是 L4 恒量：每次收敛都启用 `notificationitem` **并** pin `Fcitx`。**没有** `--tray-pin`/`--no-tray` 这个 flag。候选框主题同理：L4 默认终态（§6.6），classicui.conf + theme-set 钩子入账，生成目录不入账；无 flag。
 
 ### 分层模型
 
@@ -51,7 +51,7 @@ make release-check  # goreleaser check .goreleaser.yaml
 
 ```text
 L1 软件包（fcitx5-rime/configtool/fcitx5-gtk）→ L2 资源（下载、sha256、解压）
-→ L3 受管 *.custom.yaml → L4 profile/hotkey/drop-in + 服务启停 + tray drop-in + shell.json pin → L5 只读校验。
+→ L3 受管 *.custom.yaml → L4 profile/hotkey/drop-in + 服务启停 + tray drop-in + shell.json pin + 候选框主题（§6.6）→ L5 只读校验。
 系统操作走包级函数变量（"exec seam"）。octagram 是 librime 插件，不是 pacman 包。
 ```
 

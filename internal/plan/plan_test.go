@@ -54,6 +54,10 @@ func TestDiffConvergedHost(t *testing.T) {
 	c.DropInOK = true // present AND enabling notificationitem for the live unit
 	c.PinnedHasFc = true
 	c.Pinned = []string{tray.FcitxId}
+	c.ThemeEqual = true
+	c.ThemeDirOK = true
+	c.ThemeConfOK = true
+	c.ThemeHookOK = true
 	c.BuildMissing = nil
 	c.ContentEqual = map[string]bool{}
 	for rel := range c.Managed {
