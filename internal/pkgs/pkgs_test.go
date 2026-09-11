@@ -172,21 +172,6 @@ func writeStub(path string) error {
 	return os.WriteFile(path, []byte("stub db"), 0o644)
 }
 
-// TestSudoArgv: without a controlling terminal (agent/CI) sudo must get -n so
-// it fails fast instead of hanging on a password prompt nobody answers.
-func TestSudoArgv(t *testing.T) {
-	orig := hasTTY
-	defer func() { hasTTY = orig }()
-	hasTTY = func() bool { return false }
-	if got := strings.Join(sudoArgv("pacman", "-S", "fcitx5"), " "); got != "sudo -n pacman -S fcitx5" {
-		t.Errorf("no tty: want 'sudo -n pacman -S fcitx5', got %q", got)
-	}
-	hasTTY = func() bool { return true }
-	if got := strings.Join(sudoArgv("pacman", "-S", "fcitx5"), " "); got != "sudo pacman -S fcitx5" {
-		t.Errorf("tty: want 'sudo pacman -S fcitx5', got %q", got)
-	}
-}
-
 // TestInstallPrefersSudoNWithoutTTY: the L1 pacman step forwards the -n flag
 // end-to-end when there is no controlling terminal (headless agent run).
 func TestInstallPrefersSudoNWithoutTTY(t *testing.T) {

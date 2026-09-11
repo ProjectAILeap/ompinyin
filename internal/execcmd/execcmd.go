@@ -1,7 +1,9 @@
 // Package execcmd builds *exec.Cmd bound to a process-wide cancellation
 // context, so SIGINT/SIGTERM terminates the children the convergence shells out
 // to (rime_deployer, systemctl, pacman, DBus, sudo, …) instead of leaving them
-// orphaned while the stop window's deferred restart races them.
+// orphaned while the stop window's deferred restart races them. It also owns
+// the two process-level shell-out policies every privileged step shares: the
+// tty probe and the `sudo` argv shape.
 //
 // Why a package-level context instead of a context.Context on every seam: the
 // exec seams are package-level function variables (T0 stubs them by
@@ -12,6 +14,7 @@ package execcmd
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"sync"
 )
@@ -33,8 +36,8 @@ func SetContext(c context.Context) {
 	mu.Unlock()
 }
 
-// Context returns the installed context (never nil).
-func Context() context.Context {
+// currentContext returns the installed context (never nil).
+func currentContext() context.Context {
 	mu.RLock()
 	defer mu.RUnlock()
 	if ctx == nil {
@@ -46,5 +49,38 @@ func Context() context.Context {
 // Command is exec.CommandContext bound to the installed context. Exec seam
 // defaults use it so cancellation reaches the child process.
 func Command(name string, args ...string) *exec.Cmd {
-	return exec.CommandContext(Context(), name, args...)
+	return exec.CommandContext(currentContext(), name, args...)
+}
+
+// RunInteractive runs name with the caller's terminal wired in, so a sudo
+// password prompt is visible and pacman/systemctl progress stays on screen.
+func RunInteractive(name string, args ...string) error {
+	c := Command(name, args...)
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
+}
+
+// HasTTY reports whether a controlling terminal exists that sudo can prompt on.
+// Without one (CI, agent, pipe) sudo must use -n so it fails fast with "a
+// password is required" instead of hanging on a prompt nobody answers.
+func HasTTY() bool {
+	f, err := os.Open("/dev/tty")
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
+}
+
+// SudoArgs builds the sudo argv for a non-root command, inserting -n when there
+// is no controlling terminal. hasTTY is passed in (instead of probed here) so
+// callers can keep their own test seam.
+func SudoArgs(hasTTY bool, args ...string) []string {
+	argv := []string{"sudo"}
+	if !hasTTY {
+		argv = append(argv, "-n")
+	}
+	return append(argv, args...)
 }

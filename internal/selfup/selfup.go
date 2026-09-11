@@ -8,8 +8,6 @@ package selfup
 
 import (
 	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
+	"github.com/ProjectAILeap/ompinyin/internal/state"
 )
 
 const (
@@ -153,16 +152,12 @@ func replace(tag, asset string) error {
 	if err := Fetch(base+asset, binPath); err != nil {
 		return fmt.Errorf("下载 %s：%w", asset, err)
 	}
-	got, err := sha256File(binPath)
-	if err != nil {
-		return err
-	}
-	if !strings.EqualFold(got, want) {
+	if got := state.HashFile(binPath); !strings.EqualFold(got, want) {
 		return fmt.Errorf("sha256 不匹配：期望 %s，实得 %s；拒绝覆盖", want, got)
 	}
 
 	bak := filepath.Join(dir, "."+filepath.Base(exe)+".ompinyin.bak")
-	if err := copyFile(exe, bak); err != nil {
+	if err := state.CopyFile(exe, bak); err != nil {
 		// The same permission wall as the binary itself: keep the promise of a
 		// pre-upgrade backup by escalating just this copy.
 		if serr := runSudo("cp", "-p", exe, bak); serr != nil {
@@ -201,60 +196,10 @@ func checksumFor(path, name string) (string, error) {
 	return "", fmt.Errorf("checksums.txt 里没有 %s 的条目", name)
 }
 
-// sha256File returns the hex sha256 of a file's contents.
-func sha256File(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// copyFile copies src to dst (0644) for the pre-upgrade backup.
-func copyFile(src, dst string) error {
-	s, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-	d, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(d, s); err != nil {
-		d.Close()
-		return err
-	}
-	return d.Close()
-}
-
 // runSudo executes a privileged command for a non-root caller, using sudo -n
 // when there is no controlling terminal (agent/CI) so it fails fast.
 func runSudo(args ...string) error {
-	if !hasTTY() {
-		args = append([]string{"-n"}, args...)
-	}
-	c := execcmd.Command("sudo", args...)
-	c.Stdin = os.Stdin
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	return c.Run()
-}
-
-// hasTTY mirrors the pkgs heuristic: only prompt for a sudo password when a
-// controlling terminal exists; otherwise sudo -n fails fast for headless agents.
-func hasTTY() bool {
-	f, err := os.Open("/dev/tty")
-	if err != nil {
-		return false
-	}
-	f.Close()
-	return true
+	return execcmd.RunInteractive("sudo", execcmd.SudoArgs(execcmd.HasTTY(), args...)...)
 }
 
 // newer reports whether a is a semantically higher version than b. A leading v

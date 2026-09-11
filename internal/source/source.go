@@ -55,29 +55,12 @@ var (
 	// password prompt visible) — used for backup/cp/write into /etc/pacman.d.
 	// Without a controlling terminal (agent/CI) it uses sudo -n so it fails fast.
 	RunSudo = func(args ...string) error {
-		if !sudoTTY() {
-			args = append([]string{"-n"}, args...)
-		}
-		c := execcmd.Command("sudo", args...)
-		c.Stdin = os.Stdin
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		return c.Run()
+		argv := execcmd.SudoArgs(execcmd.HasTTY(), args...)
+		return execcmd.RunInteractive(argv[0], argv[1:]...)
 	}
 	// Now is injectable for deterministic backup timestamps in tests.
 	Now = time.Now
 )
-
-// sudoTTY mirrors the pkgs heuristic: only prompt for a sudo password when a
-// controlling terminal exists; otherwise -n fails fast for headless agents.
-func sudoTTY() bool {
-	f, err := os.Open("/dev/tty")
-	if err != nil {
-		return false
-	}
-	f.Close()
-	return true
-}
 
 // lines returns the Server lines for a preset, in priority order.
 func lines(p Preset) []string {

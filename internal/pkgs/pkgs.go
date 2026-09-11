@@ -42,39 +42,16 @@ var Run = func(name string, args ...string) error {
 
 // runInteractive executes with the caller's terminal wired in (sudo password
 // prompt, pacman progress)。
-var runInteractive = func(name string, args ...string) error {
-	c := execcmd.Command(name, args...)
-	c.Stdin = os.Stdin
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	return c.Run()
-}
+var runInteractive = execcmd.RunInteractive
 
-// hasTTY reports whether the process has a controlling terminal that sudo can
-// prompt on. Without one (CI, agent, pipe), sudo must use -n so it fails fast
-// with "a password is required" instead of hanging on a prompt nobody answers.
-var hasTTY = func() bool {
-	f, err := os.Open("/dev/tty")
-	if err != nil {
-		return false
-	}
-	f.Close()
-	return true
-}
-
-// sudoArgv builds the sudo argv for a non-root command, inserting -n when there
-// is no controlling terminal (agent/CI). runInteractive keeps stdout/stderr
-// wired so pacman progress stays visible.
-func sudoArgv(cmds ...string) []string {
-	if hasTTY() {
-		return append([]string{"sudo"}, cmds...)
-	}
-	return append([]string{"sudo", "-n"}, cmds...)
-}
+// hasTTY is the tty seam: without a controlling terminal (CI, agent, pipe) sudo
+// must use -n so it fails fast with "a password is required" instead of hanging
+// on a prompt nobody answers.
+var hasTTY = execcmd.HasTTY
 
 // sudoInvoke runs a non-root command via sudo, choosing -n when there is no tty.
 func sudoInvoke(cmds ...string) error {
-	argv := sudoArgv(cmds...)
+	argv := execcmd.SudoArgs(hasTTY(), cmds...)
 	return runInteractive(argv[0], argv[1:]...)
 }
 
