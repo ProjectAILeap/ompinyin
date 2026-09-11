@@ -50,6 +50,14 @@ var hidpiRunProd = hidpi.Run
 // fixtures stub it so T0 never shells out to the real pgrep.
 var serviceFcitxRunningProd = service.FcitxRunning
 
+// serviceStraySeamsProd preserves the production stray-cleanup seams for the
+// same reason: a bare `pkill -x fcitx5` from a test would kill the developer's
+// own input method.
+var (
+	serviceFcitxCountProd = service.FcitxCount
+	serviceKillStrayProd  = service.KillStray
+)
+
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 
 func jsonMarshal(v any) []byte {
@@ -108,6 +116,8 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 	// process probe: never shell out to the real pgrep in T0 (on a dev machine
 	// with fcitx5 running it would report a stray instance and change plan/L5).
 	service.FcitxRunning = func() bool { return false }
+	service.FcitxCount = func() int { return 0 }
+	service.KillStray = func() error { return nil }
 
 	// fake systemctl: stateful is-active
 	service.Run = func(name string, args ...string) error {
@@ -247,6 +257,8 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 			return c.Run()
 		}
 		service.FcitxRunning = serviceFcitxRunningProd
+		service.FcitxCount = serviceFcitxCountProd
+		service.KillStray = serviceKillStrayProd
 		service.RunOutput = nil
 		deploy.Run = nil
 		deploy.CompileSchemas = nil
@@ -1442,6 +1454,67 @@ func TestInstallRestartsStoppedService(t *testing.T) {
 	}
 	if !h.unitActive {
 		t.Error("fcitx5 left STOPPED — user has no input method")
+	}
+}
+
+// TestInstallClearsStrayBeforeStart locks the reported false-success: a unit
+// that is down (or flapping under Restart=always) while an unmanaged fcitx5
+// holds org.fcitx.Fcitx5. A bare start only spawns another instance that exits
+// 0 at once; `systemctl start` still returns 0, so install printed
+// "[完成] L4 start" and exited 0 while doctor showed the service down. install
+// must end the stray instead.
+func TestInstallClearsStrayBeforeStart(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		unitActive  bool // what `systemctl is-active` reports at plan time
+		wantPlanSay string
+	}{
+		{"unit down, stray owns the bus name", false, "先清理再启动"},
+		{"transient active from the Restart=always flap", true, "抖动"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			h := setupFakeHost(t, home)
+			seedCache(t, home)
+
+			o1, out1 := newTestOpts()
+			if c := Install(catalog.DefaultDesired(), false, o1); c != ExitOK {
+				t.Fatalf("install: %d\n%s", c, out1)
+			}
+
+			// A D-Bus-activated stray takes the bus name; the unit's own instances
+			// exit immediately, so Restart=always loops it and `is-active` reads
+			// active for the few hundred ms one lives (hence count 2).
+			h.unitActive = tc.unitActive
+			stray := true
+			service.FcitxRunning = func() bool { return stray }
+			service.FcitxCount = func() int {
+				if stray {
+					return 2 // doomed unit instance + stray
+				}
+				return 1
+			}
+			killed := 0
+			service.KillStray = func() error {
+				killed++
+				stray = false
+				return nil
+			}
+
+			o2, out2 := newTestOpts()
+			if c := Install(catalog.DefaultDesired(), false, o2); c != ExitOK {
+				t.Fatalf("install must clear the stray and converge, exit=%d\n%s", c, out2)
+			}
+			if killed == 0 {
+				t.Errorf("install reported success without ending the stray:\n%s", out2)
+			}
+			if !h.unitActive {
+				t.Error("fcitx5 left STOPPED — user has no input method")
+			}
+			if !strings.Contains(out2.String(), tc.wantPlanSay) {
+				t.Errorf("plan must tell the user what happens (%q):\n%s", tc.wantPlanSay, out2)
+			}
+		})
 	}
 }
 

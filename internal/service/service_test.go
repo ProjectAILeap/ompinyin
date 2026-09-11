@@ -83,6 +83,7 @@ WantedBy=default.target
 // TestStopStartPropagateErrors keeps the systemctl error wrapping (the §7
 // "失败给修复提示" contract) from regressing into a bare bool.
 func TestStopStartPropagateErrors(t *testing.T) {
+	stubNoStray(t)
 	orig := Run
 	defer func() { Run = orig }()
 
@@ -145,6 +146,7 @@ func TestRemoteState(t *testing.T) {
 // repeated too quickly" — so ompinyin must clear the limit and retry once
 // instead of telling the user to run a command that cannot work.
 func TestStartRetriesAfterResetFailed(t *testing.T) {
+	stubNoStray(t)
 	orig := Run
 	defer func() { Run = orig }()
 
@@ -167,7 +169,7 @@ func TestStartRetriesAfterResetFailed(t *testing.T) {
 		if err := Start("omarchy-fcitx5.service"); err != nil {
 			t.Fatalf("Start must succeed after reset-failed + retry, got %v", err)
 		}
-		want := []string{"--user start omarchy-fcitx5.service", "--user reset-failed omarchy-fcitx5.service", "--user start omarchy-fcitx5.service"}
+		want := []string{"--user is-active --quiet omarchy-fcitx5.service", "--user start omarchy-fcitx5.service", "--user reset-failed omarchy-fcitx5.service", "--user start omarchy-fcitx5.service"}
 		if strings.Join(calls, " | ") != strings.Join(want, " | ") {
 			t.Errorf("call sequence = %v, want %v", calls, want)
 		}
@@ -203,4 +205,90 @@ func TestStartRetriesAfterResetFailed(t *testing.T) {
 			}
 		}
 	})
+}
+
+// stubNoStray keeps Start hermetic: without it a dev machine with a live fcitx5
+// would make startUnit shell out to the real pkill.
+func stubNoStray(t *testing.T) {
+	t.Helper()
+	origRunning, origCount, origKill := FcitxRunning, FcitxCount, KillStray
+	t.Cleanup(func() { FcitxRunning, FcitxCount, KillStray = origRunning, origCount, origKill })
+	FcitxRunning = func() bool { return false }
+	FcitxCount = func() int { return 1 }
+	KillStray = func() error { return nil }
+}
+
+// TestStartClearsStrayBeforeStarting locks the root-cause fix: a stray fcitx5
+// owns org.fcitx.Fcitx5 while the unit is down, so a bare `systemctl start`
+// spawns an instance that exits 0 immediately — Restart=always loops it into
+// start-limit-hit while `start` still reports success. The stray must be ended
+// before the unit starts.
+func TestStartClearsStrayBeforeStarting(t *testing.T) {
+	origRun, origRunning, origKill := Run, FcitxRunning, KillStray
+	t.Cleanup(func() { Run, FcitxRunning, KillStray = origRun, origRunning, origKill })
+
+	var seq []string
+	running := true
+	FcitxRunning = func() bool { return running }
+	KillStray = func() error {
+		seq = append(seq, "kill")
+		running = false // the stray releases the bus name
+		return nil
+	}
+	Run = func(name string, args ...string) error {
+		switch args[1] {
+		case "is-active":
+			return errors.New("inactive") // unit down → the live fcitx5 is unmanaged
+		case "start":
+			seq = append(seq, "start")
+		}
+		return nil
+	}
+
+	if err := Start("omarchy-fcitx5.service"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(seq, ","); got != "kill,start" {
+		t.Errorf("stray must be cleared before the unit starts, sequence = %q", got)
+	}
+}
+
+// TestStartDoesNotKillAHealthyUnit: Start is also the idempotent
+// close-the-window call, so an already-active unit must keep its instance.
+func TestStartDoesNotKillAHealthyUnit(t *testing.T) {
+	origRun, origRunning, origKill := Run, FcitxRunning, KillStray
+	t.Cleanup(func() { Run, FcitxRunning, KillStray = origRun, origRunning, origKill })
+
+	killed := false
+	FcitxRunning = func() bool { return true } // the unit's own instance
+	KillStray = func() error { killed = true; return nil }
+	Run = func(name string, args ...string) error { return nil } // is-active → active
+
+	if err := Start("omarchy-fcitx5.service"); err != nil {
+		t.Fatal(err)
+	}
+	if killed {
+		t.Error("an already-active unit must not have its instance killed")
+	}
+}
+
+// TestStartReportsAStrayItCannotClear: failing to clear the stray is a real
+// failure, not a silent fall-through into a start that cannot work.
+func TestStartReportsAStrayItCannotClear(t *testing.T) {
+	origRun, origRunning, origKill := Run, FcitxRunning, KillStray
+	t.Cleanup(func() { Run, FcitxRunning, KillStray = origRun, origRunning, origKill })
+
+	FcitxRunning = func() bool { return true }
+	KillStray = func() error { return errors.New("permission denied") }
+	Run = func(name string, args ...string) error { return errors.New("inactive") }
+
+	err := Start("omarchy-fcitx5.service")
+	if err == nil {
+		t.Fatal("a stray that could not be cleared must fail the start")
+	}
+	for _, want := range []string{"清理游离 fcitx5", "pgrep -x fcitx5"} {
+		if !contains(err.Error(), want) {
+			t.Errorf("error must mention %q, got %q", want, err)
+		}
+	}
 }

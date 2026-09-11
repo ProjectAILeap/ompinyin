@@ -258,4 +258,38 @@ func TestPlanServiceNeedsStrayHint(t *testing.T) {
 	if !strings.Contains(step, "非单元 fcitx5") {
 		t.Errorf("service step must warn about the stray instance, got %q", step)
 	}
+	// plan == execution: install clears the stray itself (startUnit→KillStray),
+	// so the plan must not tell the user to run pkill by hand.
+	if strings.Contains(step, "pkill") {
+		t.Errorf("the plan must not delegate the cleanup to the user, got %q", step)
+	}
+	if !strings.Contains(step, "先清理再启动") {
+		t.Errorf("service step must say install clears the stray, got %q", step)
+	}
+}
+
+// TestPlanServiceNeedsFlapRepair: a unit that reads "active" while a second
+// fcitx5 coexists is flapping under Restart=always, so the plan must schedule
+// the start (which clears the stray) — the transient reading must not declare
+// the service satisfied forever.
+func TestPlanServiceNeedsFlapRepair(t *testing.T) {
+	c := convergedCurrent()
+	c.Unit = "omarchy-fcitx5.service"
+	c.ServiceActive = true
+	c.FcitxCount = 2
+	p := Diff(catalog.DefaultDesired(), c, false)
+	if !p.NeedService {
+		t.Error("a service flapping beside a stray must be scheduled for repair")
+	}
+	var step string
+	for _, s := range p.Steps {
+		if s.Layer == "L4" && strings.Contains(s.Title, "start ") {
+			step = s.Title
+		}
+	}
+	for _, want := range []string{"抖动", "先清理再启动"} {
+		if !strings.Contains(step, want) {
+			t.Errorf("service step must explain the flap (%q), got %q", want, step)
+		}
+	}
 }

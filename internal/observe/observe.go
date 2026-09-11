@@ -78,6 +78,11 @@ type Current struct {
 	// "another fcitx already running"), so the remedy is to end the stray first.
 	StrayFcitx bool
 
+	// FcitxCount: how many fcitx5 processes are alive. The unit's own instance is
+	// one; a second one while ServiceActive is a transient "active" reading from
+	// a Restart=always flap (a stray holds the bus name), not a healthy service.
+	FcitxCount int
+
 	// L4 candidate-window theming (§6.6): files point at the omarchy theme
 	// (ConfOK/HookOK), the generated theme dir is in place (DirOK), and the
 	// managed bytes already equal the desired content (Equal).
@@ -131,6 +136,10 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 	// bus name, so the unit's own start can never succeed. Check it with a
 	// process probe, never a fcitx5-remote/bus probe (that would create one).
 	c.StrayFcitx = !c.ServiceActive && service.FcitxRunning()
+	// Counted separately: `is-active` can read "active" during the few hundred
+	// ms a doomed instance lives under Restart=always, which would otherwise
+	// hide the coexisting stray from verify.
+	c.FcitxCount = service.FcitxCount()
 
 	// L2 assets
 	// RimeDataExists requires BOTH anchor files so a nested/wrong-layout

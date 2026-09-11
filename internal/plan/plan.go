@@ -155,7 +155,10 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	// §6.4 needs the SNI item live). Without this predicate a host whose unit
 	// was stopped by hand could never be repaired: no other layer had work, so
 	// the stop window — the only place service.Start runs — never opened.
-	p.NeedService = c.Unit != "" && !c.ServiceActive
+	// FcitxCount>1 is that same repair for a flap: the unit reads "active" for
+	// the few hundred ms its doomed instance lives, so "active" alone would
+	// declare the service satisfied and never clear the stray that causes it.
+	p.NeedService = c.Unit != "" && (!c.ServiceActive || c.FcitxCount > 1)
 	p.NeedTray = !c.PinnedHasFc || !c.DropInOK
 	// A zero desired DPI is the legacy/test snapshot meaning that X11 facts
 	// were not collected. Real observe.Collect always supplies at least 96.
@@ -173,7 +176,11 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	case p.NeedDeploy || p.NeedHost:
 		p.Add("L4", fmt.Sprintf("stop %s → rime_deployer --build → profile/hotkey/drop-in → start", unitName(c)), true)
 	case p.NeedService:
-		p.Add("L4", fmt.Sprintf("start %s（服务未运行；fcitx5 存活是终态的一部分%s）", unitName(c), strayNote(c)), true)
+		state := "服务未运行"
+		if c.ServiceActive {
+			state = "服务在 Restart=always 下抖动（游离实例占着 bus name）"
+		}
+		p.Add("L4", fmt.Sprintf("start %s（%s；fcitx5 存活是终态的一部分%s）", unitName(c), state, strayNote(c)), true)
 	default:
 		p.Add("L4", "部署产物与宿主注册均已达成", false)
 	}
@@ -238,12 +245,14 @@ func modelSuffix(d catalog.Desired) string {
 }
 
 // strayNote is the short plan-time hint for an unmanaged fcitx5 holding the
-// bus name: the unit cannot start until it is gone.
+// bus name: the unit cannot start until it is gone, and install now clears it
+// itself (service.startUnit → KillStray), so the plan must not ask the user to
+// run pkill by hand.
 func strayNote(c *observe.Current) string {
-	if !c.StrayFcitx {
+	if !c.StrayFcitx && c.FcitxCount <= 1 {
 		return ""
 	}
-	return "；检测到非单元 fcitx5 进程占着 org.fcitx.Fcitx5，先 `pkill -x fcitx5`"
+	return "；检测到非单元 fcitx5 进程占着 org.fcitx.Fcitx5，安装时会先清理再启动"
 }
 
 func unitName(c *observe.Current) string {

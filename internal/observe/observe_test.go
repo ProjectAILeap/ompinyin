@@ -27,12 +27,14 @@ func fakeHost(t *testing.T) string {
 	service.SystemUnitDirs = nil
 	orig := []func(){
 		func() { service.FcitxRunning = origFcitxRunning },
+		func() { service.FcitxCount = origFcitxCount },
 		func() { pkgs.Run = origPkgsRun },
 		func() { service.Run = origServiceRun },
 		func() { tray.ShellRunning = origShellRunning },
 		func() { theme.CurrentFont = origThemeFont },
 	}
 	service.FcitxRunning = func() bool { return false }
+	service.FcitxCount = func() int { return 0 }
 	pkgs.Run = func(string, ...string) error { return nil }
 	service.Run = func(string, ...string) error { return errors.New("inactive") }
 	tray.ShellRunning = func() bool { return false }
@@ -50,6 +52,7 @@ var (
 	origPkgsRun      = pkgs.Run
 	origServiceRun   = service.Run
 	origFcitxRunning = service.FcitxRunning
+	origFcitxCount   = service.FcitxCount
 	origShellRunning = tray.ShellRunning
 	origThemeFont    = theme.CurrentFont
 )
@@ -258,6 +261,20 @@ func TestCollectStrayFcitx(t *testing.T) {
 		t.Error("no fcitx5 process must not read as stray")
 	}
 	_ = home
+}
+
+// TestCollectCountsFcitxProcs: the process count is what exposes a
+// Restart=always flap — the unit reads "active" for the few hundred ms its
+// doomed instance lives while a stray owns the bus name.
+func TestCollectCountsFcitxProcs(t *testing.T) {
+	fakeHost(t)
+	orig := service.FcitxCount
+	defer func() { service.FcitxCount = orig }()
+
+	service.FcitxCount = func() int { return 2 }
+	if c := Collect(catalog.DefaultDesired(), state.New()); c.FcitxCount != 2 {
+		t.Errorf("FcitxCount must be observed, got %d", c.FcitxCount)
+	}
 }
 
 // TestCollectX11UnitExecMissing: the publisher unit bakes the binary path at

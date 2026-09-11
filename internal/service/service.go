@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 )
@@ -97,6 +99,12 @@ func Stop(unit string) error {
 // Restart=always, after which every start fails with "start request repeated
 // too quickly". The manual `systemctl --user start` the caller prints could not
 // work in that state either.
+//
+// The rate limit is the SYMPTOM; the stray instance owning the bus name is the
+// cause, so startUnit ends the stray first (KillStray). Without that reset the
+// retry only spawns another fcitx5 that exits 0 immediately — and because
+// `systemctl start` returns 0 as soon as a Type=simple process is spawned, the
+// run would report success while Restart=always loops forever.
 func Start(unit string) error {
 	var err error
 	execcmd.Cleanup(func() { err = startUnit(unit) })
@@ -104,6 +112,14 @@ func Start(unit string) error {
 }
 
 func startUnit(unit string) error {
+	// Only when the unit is down: only then can the only live fcitx5 be an
+	// unmanaged one. Start is also the idempotent close-the-window call on a
+	// healthy host, where killing would take the running instance with it.
+	if !IsActive(unit) && FcitxRunning() {
+		if err := KillStray(); err != nil {
+			return fmt.Errorf("清理游离 fcitx5 失败：%w（`pgrep -x fcitx5` / `journalctl --user -u %s`）", err, unit)
+		}
+	}
 	if first := Run("systemctl", "--user", "start", unit); first != nil {
 		if rerr := Run("systemctl", "--user", "reset-failed", unit); rerr != nil {
 			return fmt.Errorf("start %s: %w (reset-failed 亦失败：%v；check `journalctl --user -u %s`)", unit, first, rerr, unit)
@@ -137,6 +153,37 @@ func DaemonReload() error {
 // ("another fcitx already running" → Restart=always → start-limit-hit).
 var FcitxRunning = func() bool {
 	return execcmd.Command("pgrep", "-x", "fcitx5").Run() == nil
+}
+
+// FcitxCount counts live fcitx5 processes. Exactly one is the unit's own
+// instance; a second one while the unit claims to be active means an unmanaged
+// instance coexists, so the unit is flapping (Restart=always) rather than
+// serving. A plain process probe for the same reason as FcitxRunning.
+var FcitxCount = func() int {
+	out, err := execcmd.Command("pgrep", "-c", "-x", "fcitx5").Output()
+	if err != nil {
+		return 0 // pgrep -c exits 1 when nothing matches
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// KillStray terminates an unmanaged fcitx5 (the remedy the plan prints) and
+// waits for it to release org.fcitx.Fcitx5, so the unit's own instance can win
+// the name. pkill only guarantees the signal was sent — starting immediately
+// would race the dying process for the bus name and re-enter the flap loop.
+// Seam for T0.
+var KillStray = func() error {
+	if err := execcmd.Command("pkill", "-x", "fcitx5").Run(); err != nil {
+		return err
+	}
+	for i := 0; i < 20 && FcitxRunning(); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
 }
 
 // RunOutput is the output seam for tests.
