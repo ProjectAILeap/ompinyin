@@ -41,7 +41,12 @@ release:
   header: |
     ## ompinyin {{ .Tag }}
 
-    Omarchy 中文输入法一键部署：雾凇全拼 + 万象 LMDG + 顶栏输入法图标。
+    在 **Omarchy**（Arch + Hyprland + Wayland）上一键部署中文输入法栈：
+    **雾凇全拼 + 万象 LMDG 整句模型 + 顶栏输入法图标 + 候选框跟随 Omarchy 主题配色**。
+
+    - 双拼按需可选：`--dsp zrm|flypy|mspy|sogou|abc|ziguang|jiajia`（F4 切方案，Alt+Space 切中英）
+    - X11/XWayland 应用（如微信）候选框过小时可选 `--x11-hidpi`：默认只诊断，撤销用 `--no-x11-hidpi`
+    - 幂等可反复执行：重跑只改不同部分，`--dry-run` 预览，`uninstall` 回滚
 
     从本页按架构下载：`ompinyin_linux_amd64`（X86_64）或 `ompinyin_linux_arm64`（ARM64），
     下载后建议用 `checksums.txt` 里的 sha256 校验。安装：
@@ -51,6 +56,8 @@ release:
     install -Dm755 ompinyin ~/.local/bin/ompinyin
     ompinyin install
     ```
+
+    已装过：`ompinyin update` 刷新数据资产，`ompinyin update --self` 升级自身。
 
 changelog:
   sort: asc
