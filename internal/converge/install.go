@@ -603,7 +603,7 @@ func writeHidpi(opts Options, backupDir string, cur *observe.Current) error {
 	if _, err := hidpi.Run("xrdb", "-merge", xres); err != nil {
 		return fmt.Errorf("xrdb -merge: %w", err)
 	}
-	opts.outf("[完成] L4 X11 HiDPI：已发布 Xft.dpi=%d（fcitx5 将在本 stop 窗口后重启）", cur.X11DPIDesired)
+	opts.outf("[完成] L4 X11 HiDPI：已发布 Xft.dpi=%d（发布单元 ExecStart=%s x11-hidpi-apply；fcitx5 将在本 stop 窗口后重启）", cur.X11DPIDesired, hidpi.ExecPath())
 	return nil
 }
 

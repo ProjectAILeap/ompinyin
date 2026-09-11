@@ -181,6 +181,48 @@ WantedBy=default.target
 	return service, path
 }
 
+// UnitExecPath extracts the binary baked into the generated service unit: the
+// first token of ExecStart, unquoted when systemdEscape quoted it. "" when the
+// body carries no ExecStart. A publisher whose ExecStart no longer exists fails
+// silently (systemd cannot exec it), so the path is checked against the disk.
+func UnitExecPath(serviceUnit string) string {
+	for _, line := range strings.Split(serviceUnit, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "ExecStart=") {
+			continue
+		}
+		return firstArg(strings.TrimSpace(strings.TrimPrefix(t, "ExecStart=")))
+	}
+	return ""
+}
+
+// firstArg returns the first argv token, honouring a leading double-quoted
+// token (systemdEscape quotes paths containing spaces) and its backslash
+// escapes. "" for an empty command line.
+func firstArg(s string) string {
+	if s == "" {
+		return ""
+	}
+	if s[0] != '"' {
+		if i := strings.IndexAny(s, " \t"); i >= 0 {
+			return s[:i]
+		}
+		return s
+	}
+	for i := 1; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++ // skip the escaped character
+		case '"':
+			if unq, err := strconv.Unquote(s[:i+1]); err == nil {
+				return unq
+			}
+			return s[1:i]
+		}
+	}
+	return s // unterminated quote: report what we have
+}
+
 // ParseForceZeroScaling reads `hyprctl getoption xwayland:force_zero_scaling`.
 //
 // true (Omarchy's default, /usr/share/omarchy/default/hypr/envs.lua) means

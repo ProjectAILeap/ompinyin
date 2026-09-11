@@ -57,7 +57,7 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 			out = append(out, Check{Name: "IM 三态", OK: true, Detail: fmt.Sprintf("fcitx5-remote=%d（%s）；往返切换用触发键", n, what)})
 		}
 	} else {
-		out = append(out, Check{Name: "IM 三态", OK: false, Detail: "fcitx5 服务未运行"})
+		out = append(out, Check{Name: "IM 三态", OK: false, Detail: serviceDownDetail(c)})
 	}
 
 	// 4. tray visible: drop-in + pinned
@@ -71,17 +71,34 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 		out = append(out, Check{Name: "X11 HiDPI", OK: true,
 			Detail: "Hyprland force_zero_scaling=false：合成器已在缩放 X11 窗口，无需 Xft.dpi（发布反而会二次放大）"})
 	} else if c.X11Available {
-		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK && c.X11DPIActual == c.X11DPIDesired,
-			Detail: fmt.Sprintf("Xft.dpi 期望=%d 实际=%d（scale=%.2f）%s", c.X11DPIDesired, c.X11DPIActual, c.X11Scale, c.X11ForeignNote())})
+		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK && !c.X11UnitExecMissing && c.X11DPIActual == c.X11DPIDesired,
+			Detail: fmt.Sprintf("Xft.dpi 期望=%d 实际=%d（scale=%.2f）%s%s", c.X11DPIDesired, c.X11DPIActual, c.X11Scale, c.X11ForeignNote(), c.X11UnitExecNote())})
 	} else {
-		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK,
-			Detail: "未检测到 XWayland；已收敛 Xresources 与缩放监听，待 X11 会话发布" + c.X11ForeignNote()})
+		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK && !c.X11UnitExecMissing,
+			Detail: "未检测到 XWayland；已收敛 Xresources 与缩放监听，待 X11 会话发布" + c.X11ForeignNote() + c.X11UnitExecNote()})
 	}
 
 	// 5. candidate-window theming (§6.6)
 	out = append(out, themeCheck(c))
 
 	return out
+}
+
+// serviceDownDetail explains a stopped fcitx5 with an actionable remedy. Two
+// traps worth naming: the unit cannot start while a non-unit fcitx5 owns
+// org.fcitx.Fcitx5 (a stray is easy to create — any fcitx5-remote/bus call in a
+// shell D-Bus-activates one), and systemd's start rate limit then makes even a
+// correct start fail as "repeated too quickly", so the remedy clears it first.
+func serviceDownDetail(c *observe.Current) string {
+	unit := c.Unit
+	if unit == "" {
+		unit = "omarchy-fcitx5.service"
+	}
+	start := fmt.Sprintf("`systemctl --user reset-failed %s && systemctl --user start %s`", unit, unit)
+	if c.StrayFcitx {
+		return fmt.Sprintf("fcitx5 服务未运行，但检测到非单元的 fcitx5 进程占着 org.fcitx.Fcitx5 —— 先 `pkill -x fcitx5`，再 %s", start)
+	}
+	return "fcitx5 服务未运行：" + start
 }
 
 // x11OptionalDetail is the read-only diagnosis shown when the optional X11
@@ -97,11 +114,11 @@ func x11OptionalDetail(c *observe.Current) string {
 		residual = "；检测到历史产物，下次 install 将撤销"
 	}
 	if c.X11Available {
-		return fmt.Sprintf("未启用（scale=%.2f 期望 Xft.dpi=%d 实际=%d）%s；Xft.dpi 是全局 XWayland 资源，候选框过小时用 install --x11-hidpi 启用。",
-			c.X11Scale, c.X11DPIDesired, c.X11DPIActual, residual)
+		return fmt.Sprintf("未启用（scale=%.2f 期望 Xft.dpi=%d 实际=%d）%s；Xft.dpi 是全局 XWayland 资源，候选框过小时用 install --x11-hidpi 启用。%s",
+			c.X11Scale, c.X11DPIDesired, c.X11DPIActual, residual, c.X11UnitExecNote())
 	}
-	return fmt.Sprintf("未启用（scale=%.2f 期望 Xft.dpi=%d；无可用 X 会话）%s；Xft.dpi 是全局 XWayland 资源，候选框过小时用 install --x11-hidpi 启用。",
-		c.X11Scale, c.X11DPIDesired, residual)
+	return fmt.Sprintf("未启用（scale=%.2f 期望 Xft.dpi=%d；无可用 X 会话）%s；Xft.dpi 是全局 XWayland 资源，候选框过小时用 install --x11-hidpi 启用。%s",
+		c.X11Scale, c.X11DPIDesired, residual, c.X11UnitExecNote())
 }
 
 // themeCheck reports whether the candidate window follows the Omarchy theme:

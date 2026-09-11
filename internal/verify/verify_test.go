@@ -322,3 +322,22 @@ func TestFindFileBounded(t *testing.T) {
 		t.Error("an exact candidate path must be honored")
 	}
 }
+
+// TestServiceDownDetail names the way out: a stray (non-unit) fcitx5 owns
+// org.fcitx.Fcitx5, so the unit cannot start until it is gone, and the remedy
+// clears systemd's rate limit first (Restart=always trips it).
+func TestServiceDownDetail(t *testing.T) {
+	stray := serviceDownDetail(&observe.Current{Unit: "omarchy-fcitx5.service", StrayFcitx: true})
+	for _, want := range []string{"pkill -x fcitx5", "reset-failed", "org.fcitx.Fcitx5"} {
+		if !strings.Contains(stray, want) {
+			t.Errorf("stray detail must mention %q, got %q", want, stray)
+		}
+	}
+	plain := serviceDownDetail(&observe.Current{Unit: "omarchy-fcitx5.service"})
+	if strings.Contains(plain, "pkill") {
+		t.Errorf("without a stray there is nothing to kill: %q", plain)
+	}
+	if !strings.Contains(plain, "reset-failed") || !strings.Contains(plain, "omarchy-fcitx5.service") {
+		t.Errorf("plain detail must name the unit and reset-failed: %q", plain)
+	}
+}

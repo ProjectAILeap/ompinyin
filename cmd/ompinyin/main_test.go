@@ -192,6 +192,7 @@ func stubFakeHost(t *testing.T, home string) {
 	pkgs.Run = func(name string, args ...string) error { return nil }
 
 	service.SystemUnitDirs = nil
+	service.FcitxRunning = func() bool { return false } // never shell out to real pgrep in T0
 	unitDir := filepath.Join(home, ".config", "systemd", "user")
 	mustWrite(filepath.Join(unitDir, "omarchy-fcitx5.service"),
 		"[Unit]\nDescription=fcitx5\n[Service]\nExecStart=/usr/bin/fcitx5 --disable notificationitem\n[Install]\nWantedBy=default.target\n")
@@ -216,6 +217,7 @@ func stubFakeHost(t *testing.T, home string) {
 		facts.OctagramProbe = factsOctagramProbeProd
 		pkgs.Run = nil
 		service.SystemUnitDirs = []string{"/etc/systemd/user", "/usr/lib/systemd/user"}
+		service.FcitxRunning = serviceFcitxRunningProd
 		service.Run = nil
 		service.RunOutput = nil
 		deploy.Run = nil
@@ -228,6 +230,10 @@ func stubFakeHost(t *testing.T, home string) {
 // factsOctagramProbeProd preserves the production octagram probe across tests
 // (stubFakeHost replaces it: CI has no librime).
 var factsOctagramProbeProd = facts.OctagramProbe
+
+// serviceFcitxRunningProd preserves the production stray-instance probe across
+// tests (the fixture stubs it so T0 never shells out to the real pgrep).
+var serviceFcitxRunningProd = service.FcitxRunning
 
 func mustWrite(path, content string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

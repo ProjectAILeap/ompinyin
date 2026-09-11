@@ -167,3 +167,27 @@ func TestHasForeignXftDPI(t *testing.T) {
 		t.Fatal("comments/directives must not be treated as assignments")
 	}
 }
+
+// TestUnitExecPath: the publisher unit must be parsed back to the binary it
+// execs, including the quoted form systemdEscape produces for paths with spaces
+// (a watcher whose ExecStart vanished fails silently, so this is what the
+// doctor check keys off).
+func TestUnitExecPath(t *testing.T) {
+	svc, _ := UnitContent()
+	if got := UnitExecPath(svc); got != ExecPath() {
+		t.Errorf("UnitExecPath(generated unit) = %q, want %q", got, ExecPath())
+	}
+	cases := []struct{ unit, want string }{
+		{"[Service]\nExecStart=/usr/local/bin/ompinyin x11-hidpi-apply\n", "/usr/local/bin/ompinyin"},
+		{"[Service]\nExecStart=\"/opt/my bin/ompinyin\" x11-hidpi-apply\n", "/opt/my bin/ompinyin"},
+		{"[Service]\nExecStart=\n", ""},
+		{"[Service]\nExecStart=/usr/bin/fcitx5\n", "/usr/bin/fcitx5"},
+		{"[Unit]\nDescription=x\n", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := UnitExecPath(c.unit); got != c.want {
+			t.Errorf("UnitExecPath(%q) = %q, want %q", c.unit, got, c.want)
+		}
+	}
+}

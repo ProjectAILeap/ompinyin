@@ -46,6 +46,10 @@ var factsOctagramProbeProd = facts.OctagramProbe
 // hidpiRunProd preserves the production hyprctl/xrdb runner across tests.
 var hidpiRunProd = hidpi.Run
 
+// serviceFcitxRunningProd preserves the production stray-instance probe: the
+// fixtures stub it so T0 never shells out to the real pgrep.
+var serviceFcitxRunningProd = service.FcitxRunning
+
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 
 func jsonMarshal(v any) []byte {
@@ -100,6 +104,10 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 	os.MkdirAll(unitDir, 0o755)
 	os.WriteFile(filepath.Join(unitDir, "omarchy-fcitx5.service"), []byte(
 		"[Unit]\nDescription=fcitx5\n[Service]\nExecStart=/usr/bin/fcitx5 --disable notificationitem\n[Install]\nWantedBy=default.target\n"), 0o644)
+
+	// process probe: never shell out to the real pgrep in T0 (on a dev machine
+	// with fcitx5 running it would report a stray instance and change plan/L5).
+	service.FcitxRunning = func() bool { return false }
 
 	// fake systemctl: stateful is-active
 	service.Run = func(name string, args ...string) error {
@@ -238,6 +246,7 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 			c := realCmd(name, args...)
 			return c.Run()
 		}
+		service.FcitxRunning = serviceFcitxRunningProd
 		service.RunOutput = nil
 		deploy.Run = nil
 		deploy.CompileSchemas = nil

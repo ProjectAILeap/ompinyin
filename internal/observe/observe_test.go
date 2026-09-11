@@ -4,10 +4,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/deploy"
+	"github.com/ProjectAILeap/ompinyin/internal/hidpi"
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
 	"github.com/ProjectAILeap/ompinyin/internal/pkgs"
 	"github.com/ProjectAILeap/ompinyin/internal/service"
@@ -24,11 +26,13 @@ func fakeHost(t *testing.T) string {
 	t.Setenv("OMPINYIN_TEST_HOME", home)
 	service.SystemUnitDirs = nil
 	orig := []func(){
+		func() { service.FcitxRunning = origFcitxRunning },
 		func() { pkgs.Run = origPkgsRun },
 		func() { service.Run = origServiceRun },
 		func() { tray.ShellRunning = origShellRunning },
 		func() { theme.CurrentFont = origThemeFont },
 	}
+	service.FcitxRunning = func() bool { return false }
 	pkgs.Run = func(string, ...string) error { return nil }
 	service.Run = func(string, ...string) error { return errors.New("inactive") }
 	tray.ShellRunning = func() bool { return false }
@@ -45,6 +49,7 @@ func fakeHost(t *testing.T) string {
 var (
 	origPkgsRun      = pkgs.Run
 	origServiceRun   = service.Run
+	origFcitxRunning = service.FcitxRunning
 	origShellRunning = tray.ShellRunning
 	origThemeFont    = theme.CurrentFont
 )
@@ -231,5 +236,61 @@ func TestBuildArtifactsProbe(t *testing.T) {
 	os.WriteFile(p, []byte("x"), 0o644)
 	if got := deploy.BuildArtifactsExist(dir, []string{"rime_ice"}); len(got) != 0 {
 		t.Errorf("present artifact should not be reported missing: %v", got)
+	}
+}
+
+// TestCollectStrayFcitx: a live fcitx5 with an inactive unit is the unmanaged
+// instance that blocks the unit from ever starting (its own fcitx5 exits with
+// "another fcitx already running"). The probe is a plain pgrep; a
+// fcitx5-remote/bus probe would create the very stray it reports.
+func TestCollectStrayFcitx(t *testing.T) {
+	home := fakeHost(t)
+	orig := service.FcitxRunning
+	defer func() { service.FcitxRunning = orig }()
+
+	// no unit discovered + a running fcitx5 → stray
+	service.FcitxRunning = func() bool { return true }
+	if c := Collect(catalog.DefaultDesired(), state.New()); !c.StrayFcitx {
+		t.Errorf("a running fcitx5 with no active unit must read as stray: %+v", c)
+	}
+	service.FcitxRunning = func() bool { return false }
+	if c := Collect(catalog.DefaultDesired(), state.New()); c.StrayFcitx {
+		t.Error("no fcitx5 process must not read as stray")
+	}
+	_ = home
+}
+
+// TestCollectX11UnitExecMissing: the publisher unit bakes the binary path at
+// opt-in time; if it disappears the watcher fails to exec silently, so the
+// observation must flag it.
+func TestCollectX11UnitExecMissing(t *testing.T) {
+	home := fakeHost(t)
+	unitDir := hidpi.UnitDir(home)
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc, _ := hidpi.UnitContent()
+	writeUnit := func(body string) {
+		if err := os.WriteFile(filepath.Join(unitDir, hidpi.ServiceName), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeUnit(strings.Replace(svc, hidpi.ExecPath(), "/nonexistent/ompinyin", 1))
+	c := Collect(catalog.DefaultDesired(), state.New())
+	if !c.X11UnitExecMissing || c.X11UnitExec != "/nonexistent/ompinyin" {
+		t.Errorf("missing publisher binary not detected: exec=%q missing=%v", c.X11UnitExec, c.X11UnitExecMissing)
+	}
+	if !strings.Contains(c.X11UnitExecNote(), "不存在") {
+		t.Errorf("note must explain the missing binary: %q", c.X11UnitExecNote())
+	}
+
+	writeUnit(svc) // the real path (os.Executable at test time) does exist
+	c = Collect(catalog.DefaultDesired(), state.New())
+	if c.X11UnitExecMissing {
+		t.Errorf("existing publisher binary wrongly flagged missing: %+v", c)
+	}
+	if c.X11UnitExecNote() != "" {
+		t.Errorf("no note expected when the binary exists: %q", c.X11UnitExecNote())
 	}
 }

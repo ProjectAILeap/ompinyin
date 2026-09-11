@@ -173,7 +173,7 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	case p.NeedDeploy || p.NeedHost:
 		p.Add("L4", fmt.Sprintf("stop %s → rime_deployer --build → profile/hotkey/drop-in → start", unitName(c)), true)
 	case p.NeedService:
-		p.Add("L4", fmt.Sprintf("start %s（服务未运行；fcitx5 存活是终态的一部分）", unitName(c)), true)
+		p.Add("L4", fmt.Sprintf("start %s（服务未运行；fcitx5 存活是终态的一部分%s）", unitName(c), strayNote(c)), true)
 	default:
 		p.Add("L4", "部署产物与宿主注册均已达成", false)
 	}
@@ -195,9 +195,9 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	} else if c.X11DPIDesired == 0 {
 		p.Add("L4", "X11 HiDPI：未采集 X11 事实", false)
 	} else if p.NeedHidpi {
-		p.Add("L4", fmt.Sprintf("X11 HiDPI：收敛 Xft.dpi=%d、发布 xrdb 并安装缩放监听%s", c.X11DPIDesired, c.X11ForeignNote()), true)
+		p.Add("L4", fmt.Sprintf("X11 HiDPI：收敛 Xft.dpi=%d、发布 xrdb 并安装缩放监听%s%s", c.X11DPIDesired, c.X11ForeignNote(), c.X11UnitExecNote()), true)
 	} else {
-		p.Add("L4", fmt.Sprintf("X11 HiDPI 已发布 Xft.dpi=%d%s", c.X11DPIDesired, c.X11ForeignNote()), false)
+		p.Add("L4", fmt.Sprintf("X11 HiDPI 已发布 Xft.dpi=%d%s%s", c.X11DPIDesired, c.X11ForeignNote(), c.X11UnitExecNote()), false)
 	}
 
 	// L4 candidate-window theming (§6.6)
@@ -235,6 +235,15 @@ func modelSuffix(d catalog.Desired) string {
 		return " + grammar × " + fmt.Sprint(len(schemas)) + " 个方案"
 	}
 	return "（Model=false，无方案级 grammar）"
+}
+
+// strayNote is the short plan-time hint for an unmanaged fcitx5 holding the
+// bus name: the unit cannot start until it is gone.
+func strayNote(c *observe.Current) string {
+	if !c.StrayFcitx {
+		return ""
+	}
+	return "；检测到非单元 fcitx5 进程占着 org.fcitx.Fcitx5，先 `pkill -x fcitx5`"
 }
 
 func unitName(c *observe.Current) string {

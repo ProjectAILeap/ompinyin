@@ -226,33 +226,36 @@ type StepReport struct {
 // HostReport is the observed snapshot, narrowed to what a script may care
 // about (the full observe.Current is an internal shape).
 type HostReport struct {
-	RimeDir           string   `json:"rimeDir"`
-	Unit              string   `json:"unit"`
-	ServiceActive     bool     `json:"serviceActive"`
-	PackagesMissing   []string `json:"packagesMissing,omitempty"`
-	RimeDataExists    bool     `json:"rimeDataExists"`
-	GramFileExists    bool     `json:"gramFileExists"`
-	ProfileHasRime    bool     `json:"profileHasRime"`
-	HotkeyOK          bool     `json:"hotkeyOK"`
-	DropInOK          bool     `json:"dropInOK"`
-	PinnedHasFcitx    bool     `json:"pinnedHasFcitx"`
-	ShellRunning      bool     `json:"shellRunning"`
-	ThemeOK           bool     `json:"themeOK"`
-	BuildMissing      []string `json:"buildMissing,omitempty"`
-	OrphanManaged     []string `json:"orphanManaged,omitempty"`
-	LegacyDirExists   bool     `json:"legacyDirExists"`
-	X11Scale          float64  `json:"x11Scale"`
-	X11DPIDesired     int      `json:"x11DpiDesired"`
-	X11DPIActual      int      `json:"x11DpiActual"`
-	X11Available      bool     `json:"x11Available"`
-	X11ConfigOK       bool     `json:"x11ConfigOK"`
-	X11UnitsOK        bool     `json:"x11UnitsOK"`
-	X11UnitsPresent   bool     `json:"x11UnitsPresent"`
-	X11ManagedPresent bool     `json:"x11ManagedPresent"`
-	X11ForeignDPI     bool     `json:"x11ForeignDpi"`
-	X11PackageMissing bool     `json:"x11PackageMissing"`
-	X11ForceZeroScale bool     `json:"x11ForceZeroScaling"`
-	X11ScalingKnown   bool     `json:"x11ScalingKnown"`
+	RimeDir            string   `json:"rimeDir"`
+	Unit               string   `json:"unit"`
+	ServiceActive      bool     `json:"serviceActive"`
+	PackagesMissing    []string `json:"packagesMissing,omitempty"`
+	RimeDataExists     bool     `json:"rimeDataExists"`
+	GramFileExists     bool     `json:"gramFileExists"`
+	ProfileHasRime     bool     `json:"profileHasRime"`
+	HotkeyOK           bool     `json:"hotkeyOK"`
+	DropInOK           bool     `json:"dropInOK"`
+	PinnedHasFcitx     bool     `json:"pinnedHasFcitx"`
+	StrayFcitx         bool     `json:"strayFcitx"`
+	ShellRunning       bool     `json:"shellRunning"`
+	ThemeOK            bool     `json:"themeOK"`
+	BuildMissing       []string `json:"buildMissing,omitempty"`
+	OrphanManaged      []string `json:"orphanManaged,omitempty"`
+	LegacyDirExists    bool     `json:"legacyDirExists"`
+	X11Scale           float64  `json:"x11Scale"`
+	X11DPIDesired      int      `json:"x11DpiDesired"`
+	X11DPIActual       int      `json:"x11DpiActual"`
+	X11Available       bool     `json:"x11Available"`
+	X11ConfigOK        bool     `json:"x11ConfigOK"`
+	X11UnitsOK         bool     `json:"x11UnitsOK"`
+	X11UnitsPresent    bool     `json:"x11UnitsPresent"`
+	X11ManagedPresent  bool     `json:"x11ManagedPresent"`
+	X11ForeignDPI      bool     `json:"x11ForeignDpi"`
+	X11UnitExec        string   `json:"x11UnitExec"`
+	X11UnitExecMissing bool     `json:"x11UnitExecMissing"`
+	X11PackageMissing  bool     `json:"x11PackageMissing"`
+	X11ForceZeroScale  bool     `json:"x11ForceZeroScaling"`
+	X11ScalingKnown    bool     `json:"x11ScalingKnown"`
 }
 
 func planReportOf(p *plan.Plan) PlanReport {
@@ -283,6 +286,7 @@ func hostReportOf(c *observe.Current) HostReport {
 		PackagesMissing: c.PackagesMissing, RimeDataExists: c.RimeDataExists,
 		GramFileExists: c.GramFileExists, ProfileHasRime: c.ProfileHasRime,
 		HotkeyOK: c.HotkeyOK, DropInOK: c.DropInOK, PinnedHasFcitx: c.PinnedHasFc,
+		StrayFcitx:    c.StrayFcitx,
 		ShellRunning:  c.ShellRunning,
 		ThemeOK:       c.ThemeConfOK && c.ThemeHookOK && c.ThemeDirOK,
 		BuildMissing:  c.BuildMissing,
@@ -290,7 +294,8 @@ func hostReportOf(c *observe.Current) HostReport {
 		X11Scale: c.X11Scale, X11DPIDesired: c.X11DPIDesired, X11DPIActual: c.X11DPIActual,
 		X11Available: c.X11Available, X11ConfigOK: c.X11ConfigOK, X11UnitsOK: c.X11UnitsOK,
 		X11UnitsPresent: c.X11UnitsPresent, X11ManagedPresent: c.X11ManagedPresent, X11PackageMissing: c.X11PackageMissing,
-		X11ForeignDPI:     c.X11ForeignDPI,
+		X11ForeignDPI: c.X11ForeignDPI,
+		X11UnitExec:   c.X11UnitExec, X11UnitExecMissing: c.X11UnitExecMissing,
 		X11ForceZeroScale: c.X11ForceZeroScaling, X11ScalingKnown: c.X11ScalingKnown,
 	}
 }

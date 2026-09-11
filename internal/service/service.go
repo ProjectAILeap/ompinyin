@@ -130,6 +130,15 @@ func DaemonReload() error {
 	return err
 }
 
+// FcitxRunning reports whether any fcitx5 process is alive. Deliberately a
+// plain process check: probing through fcitx5-remote / the session bus would
+// D-Bus-activate an UNMANAGED fcitx5 whenever the service is down, and that
+// instance then owns org.fcitx.Fcitx5 so the unit can never start again
+// ("another fcitx already running" → Restart=always → start-limit-hit).
+var FcitxRunning = func() bool {
+	return execcmd.Command("pgrep", "-x", "fcitx5").Run() == nil
+}
+
 // RunOutput is the output seam for tests.
 var RunOutput = func(name string, args ...string) ([]byte, error) {
 	return execcmd.Command(name, args...).Output()

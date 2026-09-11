@@ -73,6 +73,11 @@ type Current struct {
 	PinnedHasFc  bool
 	ShellRunning bool
 
+	// StrayFcitx: an fcitx5 process is alive although the unit is not active. In
+	// that state the unit can never start (its fcitx5 exits immediately with
+	// "another fcitx already running"), so the remedy is to end the stray first.
+	StrayFcitx bool
+
 	// L4 candidate-window theming (§6.6): files point at the omarchy theme
 	// (ConfOK/HookOK), the generated theme dir is in place (DirOK), and the
 	// managed bytes already equal the desired content (Equal).
@@ -88,16 +93,18 @@ type Current struct {
 	// X11 HiDPI facts (DESIGN §6.7). Whether the compat mode is on lives in
 	// Desired (explicit opt-in); what the display reports is observed here and
 	// never configured by ompinyin.
-	X11Scale          float64
-	X11DPIDesired     int
-	X11DPIActual      int
-	X11Available      bool
-	X11ConfigOK       bool
-	X11UnitsOK        bool
-	X11UnitsPresent   bool // either publisher unit file exists (any content)
-	X11ManagedPresent bool // ompinyin-scoped Xft.dpi block exists in ~/.Xresources
-	X11ForeignDPI     bool // a competing Xft.dpi assignment exists outside that block
-	X11PackageMissing bool
+	X11Scale           float64
+	X11DPIDesired      int
+	X11DPIActual       int
+	X11Available       bool
+	X11ConfigOK        bool
+	X11UnitsOK         bool
+	X11UnitsPresent    bool   // either publisher unit file exists (any content)
+	X11UnitExec        string // binary baked into the publisher unit ("" when absent)
+	X11UnitExecMissing bool   // ... and it no longer exists: the watcher cannot exec
+	X11ManagedPresent  bool   // ompinyin-scoped Xft.dpi block exists in ~/.Xresources
+	X11ForeignDPI      bool   // a competing Xft.dpi assignment exists outside that block
+	X11PackageMissing  bool
 	// X11ForceZeroScaling mirrors Hyprland xwayland:force_zero_scaling. true
 	// (Omarchy default) = X11 windows are NOT compositor-scaled, so each toolkit
 	// scales itself and the X11 candidate needs Xft.dpi. false = the compositor
@@ -120,6 +127,10 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 	}
 	c.Unit = service.FindUnit(state.Home())
 	c.ServiceActive = c.Unit != "" && service.IsActive(c.Unit)
+	// A live fcitx5 with an inactive unit is an unmanaged instance: it owns the
+	// bus name, so the unit's own start can never succeed. Check it with a
+	// process probe, never a fcitx5-remote/bus probe (that would create one).
+	c.StrayFcitx = !c.ServiceActive && service.FcitxRunning()
 
 	// L2 assets
 	// RimeDataExists requires BOTH anchor files so a nested/wrong-layout
@@ -213,6 +224,14 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 	if serr == nil && perr == nil {
 		c.X11UnitsOK = string(sb) == serviceBody && string(pb) == pathBody
 	}
+	// The publisher execs this path on every scale change; if it vanished the
+	// watcher fails silently, so surface it instead of pretending convergence.
+	c.X11UnitExec = hidpi.UnitExecPath(string(sb))
+	if c.X11UnitExec != "" {
+		if _, err := os.Stat(c.X11UnitExec); err != nil {
+			c.X11UnitExecMissing = true
+		}
+	}
 
 	// build artifacts (only meaningful when data dir exists)
 	if _, err := os.Stat(c.RimeDir); err == nil {
@@ -244,6 +263,17 @@ func (c *Current) X11ForeignNote() string {
 		return ""
 	}
 	return "；注意：~/.Xresources 存在块外 Xft.dpi 行（xrdb 按文件顺序、后者胜，冲突时以实际值为准）"
+}
+
+// X11UnitExecNote warns when the publisher unit points at a binary that no
+// longer exists. ompinyin cannot fix it by itself (the baked path is whatever
+// the binary that opted in saw), so it must be visible instead of silently
+// leaving a watcher that fails to exec.
+func (c *Current) X11UnitExecNote() string {
+	if !c.X11UnitExecMissing {
+		return ""
+	}
+	return "；注意：发布单元指向的 ompinyin 不存在（" + c.X11UnitExec + "）——用最终路径的二进制重跑 `ompinyin install --x11-hidpi` 会重写单元"
 }
 
 // probeAll reports whether every path exists.

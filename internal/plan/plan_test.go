@@ -239,3 +239,23 @@ func TestDiffUserModifiedIsL3Work(t *testing.T) {
 		t.Error("L3 work must force a rebuild")
 	}
 }
+
+// TestPlanServiceNeedsStrayHint: when a non-unit fcitx5 holds the bus name, the
+// "start the service" step must say so — the start cannot succeed until it is
+// gone, and the user reads this line before the run touches anything.
+func TestPlanServiceNeedsStrayHint(t *testing.T) {
+	c := convergedCurrent()
+	c.Unit = "omarchy-fcitx5.service"
+	c.ServiceActive = false
+	c.StrayFcitx = true
+	p := Diff(catalog.DefaultDesired(), c, false)
+	var step string
+	for _, s := range p.Steps {
+		if s.Layer == "L4" && strings.Contains(s.Title, "start ") {
+			step = s.Title
+		}
+	}
+	if !strings.Contains(step, "非单元 fcitx5") {
+		t.Errorf("service step must warn about the stray instance, got %q", step)
+	}
+}
