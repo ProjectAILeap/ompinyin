@@ -1,4 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# goreleaser injects {{.Version}} (no leading `v`); strip the tag prefix here too
+# so `ompinyin version` does not depend on which route built the binary.
+VERSION := $(VERSION:v%=%)
 PKG     := github.com/ProjectAILeap/ompinyin/internal/catalog
 LDFLAGS := -X $(PKG).Version=$(VERSION)
 

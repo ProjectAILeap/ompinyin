@@ -16,3 +16,6 @@ coverage.*
 
 # Local test artifacts
 vm-install.log
+
+# pi agent project-local packages (machine-local clone, never shared)
+.pi/

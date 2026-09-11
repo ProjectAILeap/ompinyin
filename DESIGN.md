@@ -162,6 +162,7 @@ internal/verify    L5 只读复核 + doctor checklist
 internal/plan      diff(desired, current) → 有序步骤列表
 internal/source    独立 pacman 仓库镜像助手：写 /etc/pacman.d/mirrorlist（sudo）
 internal/selfup    update --self：自升级二进制（备份 + checksums.txt 校验 + 原子替换）
+internal/execcmd   exec seam 的公共底座：exec.CommandContext 绑定运行 context（SIGINT 一并终止子进程）
 ```
 
 纯包（`catalog`、`profile`、`hotkey`、`plan`）只吃字符串输入、无 I/O，便于无假宿主单测。
@@ -227,7 +228,7 @@ translator/max_homophones: 8
 | 万象 `wanxiang-lts-zh-hans.gram`（~420MB） | `https://github.com/amzxyz/RIME-LMDG/releases/download/LTS/wanxiang-lts-zh-hans.gram` | CNB：`https://cnb.cool/amzxyz/rime-wanxiang/-/releases/download/model/wanxiang-lts-zh-hans.gram` | 同上 |
 
 - 通道 `--channel stable|nightly`，**默认 stable**。stable 走 `RimeIceTagged(<解析出的具体 tag>)`：先经 releases API（直连→ghproxy 回退）解析最新非 nightly release（如 `2026.06.30`），上游 URL、NJU 镜像（支持 `/github-release/<owner>/<repo>/<tag>/` 路径）与 ghproxy 三路候选同 tag 逐字节一致；解析失败回退 `releases/latest`（该 repo 上是滚动 nightly）。nightly 走 `.../download/nightly/full.zip`，**不混用 NJU LatestRelease**（那是 stable 快照，会静默击穿通道）。
-  - **解析时机**：API 只在「没有可用 pin」且「本运行确实要跑 L2」时查一次；清单里已记有具体 stable tag 时 plain install 直接沿用（不重复查 API）。否则大陆用户（api.github.com 不可达）会每次收敛都重试。重新 pin 的唯一入口是 `ompinyin update`。
+  - **解析时机**：清单里已记有具体 stable tag 时，plain `install` 直接沿用（不重复查 API，否则大陆用户 api.github.com 不可达会每次收敛都重试）；只有当没有可用 pin、或本次是 `ompinyin update`（forceRefetch，唯一重新 pin 的入口）时才查 API。`update` 解析失败时沿用已 pin 的 tag（重新下载同一 tag 仍有意义），不会静默退回 nightly 字节。
   - **诚实报告**：回退到 `releases/latest` 时实际构建就是滚动 nightly。`status` 会比对 `channel` 与记账 tag，不一致时提示「channel=stable 但未 pin 到具体 stable tag（实际构建=nightly）」，不假装 pin 住了。
   - GitHub `releases/latest` 本身是滚动 nightly；NJU `LatestRelease` 镜像喂的是最后一个 STABLE 快照。**stable 通道必须 pin 具体 tag**，否则同一 channel 在不同镜像回退路径下拿到不同字节。
   - `wanxiang`：GitHub `RIME-LMDG` 的 `LTS` 与 CNB `rime-wanxiang` 的 `model` 提供**逐字节一致**的 `wanxiang-lts-zh-hans.gram`（均 420248620 B），仅 release tag 名不同。`LTS` 是移动 tag：重下载内容与记账 sha256 不符时告警并接受（模型更新），不硬失败。
@@ -424,7 +425,7 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 - **账本先于终态落盘**：每层写完字节就 `SaveLedger()`（只持久化 `ManagedFiles` / `Assets` 这些「磁盘事实」），`Desired` / `SchemaList` 只在收敛成功后由 `Save()` 推进。否则一次中途失败会让下次把工具自己写的文件判成「外来」并索要覆盖确认。
 - **锁**：`~/.local/state/ompinyin/lock`，防并行实例互踩（尤其 stop/start 窗口期）。`Home()`/`Dir()` 不判失败即终止进程（会跳过 `defer lock.Release()`）；家目录在 CLI 入口用 `CheckHome()` 一次性校验（退出码 3）。
 - **原子写**：所有配置 temp 文件 + rename，中断不留半截文件。
-- **备份**：改 L3/L4 前快照 `backup-<ts>/`（默认仅受管文件 + drop-in + shell.json 片段，`-b` 整目录）；**只有存在写作的层时才建**（已收敛的机器重跑零副作用）；同秒碰撞自动加 `-N` 后缀；收敛成功后只保留最近 5 个。回滚 = 拷回 + 重编译重启；`switch` 双向可逆。
+- **备份**：改 L3/L4 前快照 `backup-<ts>/`（默认仅受管文件 + drop-in + shell.json 片段，`-b` 整目录）；**只有存在写作的层时才建**（已收敛的机器重跑零副作用）；同秒碰撞自动加 `-N` 后缀；收敛成功后只保留最近 5 个，且总量超 `LedgerBackupBudget`（4 GiB）时从最旧的开始继续删（最新的永远保留；`-b` 单份可达 ~1GB）。`uninstall` 删除前同样先快照（含 `state.json` —— 它记录用户选过的 `Desired`，如 `--dsp`，重建无法恢复）。回滚 = 拷回 + 重编译重启；`switch` 双向可逆。
 - **磁盘预检** ≥2GB（模型 420MB × 数据 + 缓存副本）。
 - **安全**：不以 root 跑除 pacman 外的步骤；zip slip 拒绝；下载先过**形状护栏**（`MinBytes` + zip 魔数，拦住 200 返回的错误页/门户页），再按记账 sha256 校验（immutable tag 不符硬失败、移动 tag 告警）；`Content-Length` 与实际字节数不符即截断失败；坏字节不进缓存、不落半截 `.gram`（落位后还会复算一次校验）。
 - **断点续传**：420MB 模型 `Range` + `.part` 临时文件，校验通过再 rename。**续传只认同源**：`.part` 旁写一个 `.part.src` 记录来源 URL，换镜像/换 tag 时先删 `.part`（跨源拼接会静默产出损坏模型），`.part` 超 24h 也不再续；`ompinyin clean` 连 `.part` 一起清。
@@ -531,9 +532,9 @@ v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 状态清单
 18. 写 fcitx5 `profile` 时 `GroupOrder` 永远居末，`Groups/0/Items/N` 永远从 0 连续编号（不留空洞）。
 19. 专用 drop-in 的路径**跟随发现的 unit**（`fcitx5.service` 就写 `fcitx5.service.d/`），且 L5 校验的是**内容**（ExecStart 不再 `--disable notificationitem`），不是文件存在。
 20. 孤儿受管文件 = 账本 − 期望集合，每次收敛都清（不只 `Model=false`）；只删账本记过的文件，别人写的永不删。
-21. 备份失败即拒绝该次覆盖/删除（§5.1「先备份后写」是硬承诺，错误不得丢弃）。
+21. 备份失败即拒绝该次覆盖/删除（§5.1「先备份后写」是硬承诺，错误不得丢弃）；覆盖、删除与 `uninstall` 都适用。
 22. 预检必须拦 root 与缺失的 `rime_deployer`/`fcitx5-remote`/`omarchy`；`--os-override` 任意非空值即绕过 ID 检查并告警。
-23. SIGINT/SIGTERM 走 context 取消（第二次信号硬退出 130），使 stop 窗口的 defer 仍能收尾。
+23. SIGINT/SIGTERM 走 context 取消（第二次信号硬退出 130），使 stop 窗口的 defer 仍能收尾；同一 context 经 `execcmd` 绑定到所有 exec seam，子进程（rime_deployer/systemctl/pacman/sudo/DBus）一并被终止，不留孤儿进程与 stop 窗口竞争。
 24. 候选框主题：颜色映射唯一来源是 theme-set 钩子脚本（Go 侧不重复）；classicui.conf 与钩子入账、按 §5.1 协议覆盖；生成目录不入账但 uninstall 显式删除；热重载只用 `ReloadAddonConfig`（`fcitx5-remote -r` 不重读 addon 配置）。
 25. X11 HiDPI（§6.7）默认只诊断：`--x11-hidpi` 未显式给出时，收敛绝不写 `~/.Xresources`、不装 `xorg-xrdb`、不装两个 user 单元；`Desired.X11HiDPI` 由且仅由命令行显式 flag 置位。
 26. 已 opt-in 的 X11 HiDPI 是**行级拥有**（marker 块内仅 `Xft.dpi`）；`monitors.lua` 与 Hyprland 配置只读不写；`classicui.conf` 永不写。撤销（`--no-x11-hidpi`）先禁 path 单元再删文件；`ApplyX11HiDPI` 在未 opt-in 时 no-op。

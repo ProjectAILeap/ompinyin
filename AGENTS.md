@@ -130,7 +130,7 @@ CI（**绝不**跑系统操作、**绝不**碰网络）：gofmt → `go vet` →
 机器可动作的表面。保持 flag 与退出码稳定——改动会破坏 agent 提示词与脚本。
 
 - **退出码**（§7）：`0` 成功 · `1` 执行失败 · `2` 用法错误 · `3` 预检失败 · 第二次 SIGINT 后 `130`。
-- **`--json`** → stdout 是纯 JSON（诊断走 stderr）：`status --json`、`doctor --json`，以及 `install/switch/update --dry-run --json` → `{tool,version,command,desired,plan}`，其中 `plan = {need:{l1,l2,l3,deploy,host,tray,theme,hidpi}, steps, needsApply}`（`hidpi` 同时覆盖 opt-in 收敛与 opt-out 撤销）。**这三个命令 `--json` 而不加 `--dry-run` 是用法错误（exit 2）**——stdout 绝不混人类文本与 JSON。
+- **`--json`** → stdout 是纯 JSON（诊断走 stderr）：`status --json`、`doctor --json`，以及 `install/switch/update --dry-run --json` → `{tool,version,command,desired,plan}`，其中 `plan = {need:{l1,l2,l3,deploy,host,service,tray,theme,hidpi}, steps, needsApply}`（`hidpi` 同时覆盖 opt-in 收敛与 opt-out 撤销；`service` = 已发现 unit 但未运行）。**这三个命令 `--json` 而不加 `--dry-run` 是用法错误（exit 2）**——stdout 绝不混人类文本与 JSON。
 - **非交互**：`-y/--yes`；干净序列 = `--dry-run --json` → 断言 `plan.needsApply` → `-y`。无 tty 时自动用 `sudo -n`（需要给 pacman 配 NOPASSWD sudoers；绝不 run as root）。
 - **完成信号**：`plan.needsApply:false`（或 `status` 无差异）= 没事可做——停止，别再跑。
 - **`update --self`**：替换二进制（备份旧的、按 `checksums.txt` 校验 sha256、原子替换）。
