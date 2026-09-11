@@ -48,7 +48,16 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 	}
 
 	// 3. IM tri-state (read-only probe of current state)
-	if c.Unit != "" && c.ServiceActive {
+	switch {
+	case c.Unit == "" || !c.ServiceActive:
+		out = append(out, Check{Name: "IM 三态", OK: false, Detail: serviceDownDetail(c)})
+	case c.FcitxCount > 1:
+		// Restart=always flap: an unmanaged fcitx5 owns org.fcitx.Fcitx5, so the
+		// unit's own instance exits immediately and `is-active` reads "active"
+		// only for the few hundred ms it lives. A second process exposes it: the
+		// transient reading is not a terminal state, so L5 must not pass on it.
+		out = append(out, Check{Name: "IM 三态", OK: false, Detail: strayCoexistDetail(c)})
+	default:
 		n, err := service.RemoteState()
 		if err != nil {
 			out = append(out, Check{Name: "IM 三态", OK: false, Detail: "fcitx5-remote 不可用: " + err.Error()})
@@ -56,8 +65,6 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 			what := map[int]string{0: "未激活", 1: "英文", 2: "中文"}[n]
 			out = append(out, Check{Name: "IM 三态", OK: true, Detail: fmt.Sprintf("fcitx5-remote=%d（%s）；往返切换用触发键", n, what)})
 		}
-	} else {
-		out = append(out, Check{Name: "IM 三态", OK: false, Detail: serviceDownDetail(c)})
 	}
 
 	// 4. tray visible: drop-in + pinned
@@ -99,6 +106,18 @@ func serviceDownDetail(c *observe.Current) string {
 		return fmt.Sprintf("fcitx5 服务未运行，但检测到非单元的 fcitx5 进程占着 org.fcitx.Fcitx5 —— 先 `pkill -x fcitx5`，再 %s", start)
 	}
 	return "fcitx5 服务未运行：" + start
+}
+
+// strayCoexistDetail explains a unit that reads "active" while a second fcitx5
+// coexists: the unmanaged instance holds org.fcitx.Fcitx5, so the unit's own
+// process exits immediately and Restart=always loops it. The transient
+// `is-active` reading is not a terminal state.
+func strayCoexistDetail(c *observe.Current) string {
+	unit := c.Unit
+	if unit == "" {
+		unit = "omarchy-fcitx5.service"
+	}
+	return fmt.Sprintf("检测到 %d 个 fcitx5 进程：非单元实例占着 org.fcitx.Fcitx5，%s 在 Restart=always 下反复重启（瞬时 active 不是终态）——先 `pkill -x fcitx5`，再 `systemctl --user reset-failed %s && systemctl --user start %s`", c.FcitxCount, unit, unit, unit)
 }
 
 // x11OptionalDetail is the read-only diagnosis shown when the optional X11

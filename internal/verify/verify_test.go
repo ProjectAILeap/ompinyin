@@ -128,6 +128,35 @@ func TestIMTriStateRequiresService(t *testing.T) {
 	}
 }
 
+// TestIMCheckRejectsAFlappingService locks the false-success fix: a unit under
+// Restart=always reads "active" for the few hundred ms its doomed instance
+// lives, so the ServiceActive snapshot alone passed L5 while a stray owned the
+// bus name. A second fcitx5 process must fail the check instead.
+func TestIMCheckRejectsAFlappingService(t *testing.T) {
+	d := catalog.DefaultDesired()
+	orig := service.RunOutput
+	defer func() { service.RunOutput = orig }()
+	service.RunOutput = func(string, ...string) ([]byte, error) { return []byte("2"), nil }
+
+	c := convergedHost()
+	c.ServiceActive = true
+	c.FcitxCount = 2 // the unit's dying instance + the stray
+	got := find(t, TerminalState(d, c), "IM 三态")
+	if got.OK {
+		t.Error("a unit flapping beside a stray must not satisfy the IM check")
+	}
+	for _, want := range []string{"2 个 fcitx5", "pkill -x fcitx5", "Restart=always"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail must mention %q, got %q", want, got.Detail)
+		}
+	}
+
+	c.FcitxCount = 1 // a single instance is the healthy case
+	if got := find(t, TerminalState(d, c), "IM 三态"); !got.OK {
+		t.Errorf("one fcitx5 process is healthy: %s", got.Detail)
+	}
+}
+
 // TestDropInCheckRequiresEnabledContent locks 评审 P1-4: presence is not
 // enough — the file must actually enable notificationitem.
 func TestDropInCheckRequiresEnabledContent(t *testing.T) {
