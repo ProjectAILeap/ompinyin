@@ -129,7 +129,7 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 | 资产缓存 | `~/.cache/ompinyin/` |
 | 状态清单 | `~/.local/state/ompinyin/state.json` |
 
-> **AI / Agent 装机（可选）**：想让 agent 帮你装 / 修，可用装机助手 skill（`.agents/skills/ompinyin-install/SKILL.md`）。手动装照上方「快速开始」即可。
+> **AI / Agent 装机（可选）**：想让 agent 帮你装 / 修 / 诊断，可用运维助手 skill（`.agents/skills/ompinyin-install/SKILL.md`，含候选框大小与 X11/微信 HiDPI 二次放大排障）。手动装照上方「快速开始」即可。
 
 ## 开发 / License
 
