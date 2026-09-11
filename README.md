@@ -67,7 +67,7 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 
 安装后 fcitx5 候选框（顶栏输入法图标之外的候选词窗口）**自动**采用当前 Omarchy 主题配色：深色圆角面板 + 主题 accent 高亮选中候选，对比色文字自动计算（亮 accent 配深字、暗 accent 配浅字），换主题即自动刷新，无需重启。
 
-- 实现：`~/.config/omarchy/hooks/theme-set.d/fcitx5-theme`（`omarchy theme set` 触发生成 + 热重载）+ `~/.config/fcitx5/conf/classicui.conf`（指向 `omarchy` 主题）+ 生成目录 `~/.local/share/fcitx5/themes/omarchy/`。
+- 实现：`classicui.conf` 指向 `omarchy` 主题 + `theme-set.d/fcitx5-theme` 钩子（换主题触发生成 + 热重载，生成目录见下方「关键路径」）。
 - 都是受管文件：手改会在下次收敛时按所有者协议提示（确认后先备份再覆盖）；`uninstall` 一并还原默认候选框。
 - 面板质感想再亮一档：把钩子里的 `bg` 从 `background` 换成 `lighter_background`。
 
@@ -81,7 +81,7 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 | 只要双拼、去掉全拼 | `ompinyin switch --dsp zrm --no-quanpin` |
 | 去掉双拼 / 全拼做默认 | `ompinyin switch --dsp none` / `ompinyin switch --full` |
 | 不要 420MB 模型 | `ompinyin install --no-model`（`--model` 重新启用） |
-| 修复已验证的旧 X11 候选框过小 | `ompinyin install --x11-hidpi`（默认只诊断，见下方风险） |
+| 修复已验证的旧 X11 候选框过小 | `ompinyin install --x11-hidpi`（默认只诊断，见「已知问题」） |
 | 撤销 X11 HiDPI 兼容模式 | `ompinyin install --no-x11-hidpi`（移除受管块与缩放监听） |
 | 刷新数据到最新 | `ompinyin update`（`--self` 一并升级程序） |
 | 装包失败 / 镜像慢 | `ompinyin source` 后重跑 `install` |
@@ -117,7 +117,10 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 - **手改受管文件会被覆盖**：由工具生成的文件请写独立的非受管补丁，别手改。
 - **Foot终端全屏输入时可能出现候选框不可见**：Hyprland 渲染器问题，本工具范围外（桌面窗口正常）。
 - **候选框主题依赖当前 Omarchy 主题颜色**（`~/.local/state/omarchy/current/theme/colors.toml`）：它不存在时（极少见）候选框保持 fcitx5 默认外观，`ompinyin doctor` 会提示「候选框主题」未达标。
-- **X11 HiDPI 是显式 opt-in 的兼容模式，不是默认项**：`--x11-hidpi` 写入**全局** XWayland `Xft.dpi`。它可修复微信等旧 X11 输入上下文的 fcitx5 候选框过小，但其它读取该资源的 X11/Electron 应用可能已被合成器或自身缩放，再被放大一次——这是对整桌面的全局副作用，所以默认只读诊断：`doctor`/`status` 每次都展示 X11 缩放与 Xft.dpi 现状而不改任何文件，先用 `doctor` 确认候选框过小，再只在已验证的应用上 `install --x11-hidpi` 启用。**混合 DPI 多屏没有可靠的单值解**：XWayland 与 `Xft.dpi` 都是全局的，不能同时精确适配每块屏，也不会随焦点屏自动切换（来回改值会影响所有 X11 应用并打断输入）。用 `install --no-x11-hidpi` 撤销（移除受管块与监听单元；当前会话已发布的值保持到注销）。**一个框架只能有一个缩放权**：`Xft.dpi` 是全局的，凡把 Xft.dpi 当逻辑 DPI 的 X11 客户端（Qt 显式 `QT_SCALE_FACTOR`、GTK、Electron）都会二次放大——启用后必须清掉各 toolkit 的显式缩放因子（微信的 per-app 消解用 `QT_SCREEN_SCALE_FACTORS=2`，它会覆盖 DPI 派生因子，而不是叠加）。另外，若 Hyprland 设了 `xwayland:force_zero_scaling=false`（合成器已缩放 X11），本模式会自动变为 no-op（发布会 4×）——Omarchy 默认为 `true`（X11 各 toolkit 自己缩），正是本模式的适用前提。
+- **X11 HiDPI（默认只诊断，非默认项）**：`--x11-hidpi` 写**全局** XWayland `Xft.dpi`，可修微信等旧 X11 应用的 fcitx5 候选框过小；但其它读该资源的 X11/Electron 应用可能二次放大。`doctor`/`status` 只展示 X11 缩放与 `Xft.dpi` 现状、不改文件——先用 `doctor` 确认候选框确实过小，再 `install --x11-hidpi`。
+  - **一个框架只能有一个缩放权**：启用后清掉各 toolkit 的显式缩放因子——微信用 `QT_SCREEN_SCALE_FACTORS=2`（覆盖 DPI 派生因子），别与 `QT_SCALE_FACTOR` 并用；也不要用「删掉全局 `Xft.dpi`」修单个应用。
+  - 多屏混合 DPI 没有单值解，不做随焦点切换；撤销用 `install --no-x11-hidpi`（当前会话已发布的值保留到注销）。
+  - 前置是 Omarchy 默认的 `xwayland:force_zero_scaling=true`；为 `false`（合成器已缩 X11）时本模式自动 no-op。细节见 [DESIGN §6.7](DESIGN.md#67-可选-x11-hidpi-兼容模式classicui-候选框)。
 
 ## 关键路径
 
@@ -136,6 +139,8 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 ```bash
 make build   # 编译 cmd/ompinyin → bin/ompinyin
 make test    # go test -race ./...
+make lint    # golangci-lint run --timeout 5m ./...
+make fmt     # gofmt -w .
 ```
 
 [MIT](./LICENSE)

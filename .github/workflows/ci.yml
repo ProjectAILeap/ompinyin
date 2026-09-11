@@ -32,5 +32,5 @@ jobs:
         run: go build -o bin/ompinyin -ldflags "-X github.com/ProjectAILeap/ompinyin/internal/catalog.Version=${GITHUB_REF_NAME:-dev}" ./cmd/ompinyin
       - name: version smoke
         run: ./bin/ompinyin version
-      # 绝不在 CI 跑系统操作（§9）：T0 假宿主单测覆盖约 70% 代码路径，
+      # 绝不在 CI 跑系统操作（§9）：T0 假宿主单测覆盖约 65% 语句，
       # 真机验收（T3/T4）由本机 checklist 承担，见 DESIGN.md §15。

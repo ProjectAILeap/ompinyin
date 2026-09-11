@@ -73,7 +73,7 @@ CLI 与状态清单使用短 ID；落到磁盘的是雾凇 schema 名。algebra 
 | `--dsp zrm` | `quanpin` | `zrm` | 全拼（默认）+ 自然码 |
 | `--dsp flypy --dsp-default` | `flypy` | `quanpin` | 小鹤（默认）+ 全拼 |
 | `--dsp zrm --no-quanpin` | `zrm` | — | 仅自然码 |
-| `--dsp-default` 且无 `--dsp` | 非法 | — | 预检失败 |
+| `--dsp-default` 且无 `--dsp` | 非法 | — | 用法错误（exit 2） |
 
 约束：
 
@@ -154,6 +154,7 @@ internal/profile   fcitx5 profile INI 宽容读/严格写
 internal/hotkey    [Hotkey] 写入 + Shift_L 白名单校验
 internal/tray      L4 顶栏：专用 drop-in + shell.json pinned 读/并/写数组 + 重启外壳
 internal/theme     L4 候选框主题：classicui.conf + theme-set 钩子 + 生成目录 + 热重载
+internal/hidpi     L4 可选 X11 HiDPI：~/.Xresources 行级块 + 登录/监听 user 单元 + Xft.dpi 发布
 internal/deploy    rime_deployer --build $RIME /usr/share/rime-data $RIME/build
 internal/service   systemctl --user 封装（omarchy-fcitx5 优先）
 internal/state     ~/.local/state/ompinyin/state.json 状态清单
@@ -364,17 +365,25 @@ fcitx5 SNI 的 `Id` = **`Fcitx`**（`Tray.qml` 用 `pinnedIds.indexOf(item.id)` 
 
 ### 6.7 可选 X11 HiDPI 兼容模式（ClassicUI 候选框）
 
-XWayland 的 RandR DPI 固定为 96，故 ClassicUI 的 X11 候选框可通过 `xrdb` 的根窗口 `RESOURCE_MANAGER/Xft.dpi` 缩放。但它是**全局 XWayland 资源**：其它 X11/Electron 应用若已由合成器或自身缩放，再读取它可能二次放大。因此**默认只诊断**：`status`/`doctor` 永远读回并展示 X11 事实（scale、期望/实际 `Xft.dpi`、受管块与两个单元的残留），但不写文件、不装 `xorg-xrdb`；用户确认旧 X11 应用候选框过小时，才以 `install --x11-hidpi` 明确 opt-in（持久化进 `Desired.X11HiDPI`）。启用时取 `round(96 × scale)`，不写 Hyprland 配置或 `classicui.conf`；`~/.Xresources` 仅管理标记块中的 `Xft.dpi`，保留其余用户内容。混合 DPI 多屏没有正确的自动解：XWayland 和 Xft 都是单个全局值，焦点屏动态切换会影响所有 X11 应用并打断输入，故不做自动随焦点切换；以用户选择启用的固定当前值为兼容取舍。
+**问题**：Wayland 下 classicui 是**双 UI**（同一进程同时建 `x11::0` 与 wayland 两套），X11/XWayland 应用（微信，走 fcitx4 老协议）命中 X11 候选框；XWayland 的 RandR 恒上报 96 DPI，`PerScreenDPI` 在 XWayland 被源码强制忽略，`ForceWaylandDPI` / `GDK_SCALE` / `QT_SCALE_FACTOR` 都够不到这套 → 2x 屏上候选框字小。唯一杠杆是根窗口 `RESOURCE_MANAGER` 的 `Xft.dpi`（`XCBUI::scaledDPI` 读它；XCBUI 只在启动时解析一次，改了要重启 fcitx5）。
 
-发布单元 `ompinyin-x11-hidpi.service` 以**安装时解析的绝对二进制路径**（`os.Executable()`）为 `ExecStart`，不经 `/usr/bin/env`（systemd user 的 PATH 不含 `~/.local/bin`）；`DISPLAY` 从 graphical session 继承，**不硬编码 `:0`**（Hyprland 的 XWayland 编号不保证）。发布决策在 L1 之后重新探测 X 会话，不复用 L1 前的 `X11Available` 快照（否则首次 opt-in 会跳过发布并在 L5 报「期望≠实际」）。opt-in 意图在收敛开始时就落盘（双向）：本轮即使 L5 失败，下一次裸 `install` 也不会把用户刚选的模式误判成相反意图（opt-in 被拆 / opt-out 被重开）。
+**它是全局 X11 缩放权，不是候选框私有开关**：其它 X11/Electron 应用若已由合成器或自身缩放，读取后可能二次放大。因此**默认只诊断**：`status`/`doctor` 永远读回并展示 X11 事实（scale、期望/实际 `Xft.dpi`、受管块与两个单元的残留），不写文件、不装 `xorg-xrdb`；用户确认旧 X11 应用候选框过小时，才以 `install --x11-hidpi` 明确 opt-in（持久化进 `Desired.X11HiDPI`）。混合 DPI 多屏没有正确的自动解：XWayland 和 Xft 都是单个全局值，焦点屏动态切换会影响所有 X11 应用并打断输入，故不做自动随焦点切换。
+
+**取值**：`dpi = round(96 × scale)`（X 资源只收整数）。96 是 1x 基准的三重约定——CSS 参考像素、X11 历史缺省 DPI、Pango/fontconfig 缺省分辨率（面板真实 DPI 在逻辑缩放体系里用不上）；映射 1.0→96 / 1.25→120 / 1.5→144 / 1.6→154 / 1.75→168 / 2.0→192。`scale` 只读、逐级降级：① `hyprctl monitors -j` 聚焦屏实时值（能处理 `monitors.lua=auto`）；② `monitors.lua` 的 `omarchy_monitor_scale`；③ 沿用现有 `Xft.dpi`（首次无源按 96，不放大）。
+
+**落地**：`~/.Xresources` 仅行级拥有 marker 块中的 `Xft.dpi`，保留其余用户内容；不写 Hyprland 配置或 `classicui.conf`。发布单元 `ompinyin-x11-hidpi.service` 以**安装时解析的绝对二进制路径**（`os.Executable()`）为 `ExecStart`，不经 `/usr/bin/env`（systemd user 的 PATH 不含 `~/.local/bin`）；`DISPLAY` 从 graphical session 继承，**不硬编码 `:0`**（Hyprland 的 XWayland 编号不保证）。`ompinyin-x11-hidpi.path` 监听 `~/.config/hypr/monitors.lua`，缩放变化即重算重推（仅值变化时才重启 fcitx5，避免无谓打断输入）。发布决策在 L1 之后重新探测 X 会话，不复用 L1 前的 `X11Available` 快照（否则首次 opt-in 会跳过发布并在 L5 报「期望≠实际」）。opt-in 意图在收敛开始时就落盘（双向）：本轮即使 L5 失败，下一次裸 `install` 也不会把用户刚选的模式误判成相反意图（opt-in 被拆 / opt-out 被重开）。
 
 撤销用 `install --no-x11-hidpi`：先 `disable --now` path 单元（防监视器变化再发布）→ 删两个 user 单元 → 移除受管块（空则删 `~/.Xresources`）；当前会话已发布的值保留到注销（`xrdb -load` 会清空用户整库，破坏性过大，不做运行时还原）。`ompinyin x11-hidpi-apply`（内部命令，不进 CLI 契约）是登录发布/缩放监听的私有入口：取与 `install` 相同的状态锁（避免第二个 stop 窗口），未 opt-in 时 no-op，防残留 enable 链接继续发布全局资源；重启 fcitx5 失败会把退出码降为失败（同 §6.0 的 stop 窗口守卫）。
 
-**它是全局 X11 缩放权，不是候选框私有开关。** Hyprland 的 `xwayland:force_zero_scaling` 决定 X11 窗口是否由合成器缩放：Omarchy 默认 `true`（`/usr/share/omarchy/default/hypr/envs.lua`）= **不由合成器缩放**，每个 toolkit 各自缩，X11 候选框才需要 `Xft.dpi`；若为 `false`（Hyprland 默认）= 合成器已把 X11 整体放大（像素化但尺寸对），此时发布 `Xft.dpi` 会让候选框与所有 X11 应用一起 4×，故本模式**自动失效**（no-op + 说明，不装包、不落文件、不发布）。fcitx5 侧没有更小的替代杠杆：`PerScreenDPI` 在 XWayland 上被源码强制忽略、`classicui.conf` 只有 Wayland 专用的 `ForceWaylandDPI`，而 `Font` 只放大文字——`XCBWindow::setScale(dpi/96)` 通过 `cairo_surface_set_device_scale` 缩放**整个候选窗口**（背景/边距/高亮/文字一起），所以 Font 不能替代它。
+**`force_zero_scaling` 是前置。** Hyprland 的 `xwayland:force_zero_scaling` 决定 X11 窗口是否由合成器缩放：Omarchy 默认 `true`（`/usr/share/omarchy/default/hypr/envs.lua`）= **不由合成器缩放**，每个 toolkit 各自缩，X11 候选框才需要 `Xft.dpi`；若为 `false`（Hyprland 默认）= 合成器已把 X11 整体放大（像素化但尺寸对），此时发布 `Xft.dpi` 会让候选框与所有 X11 应用一起 4×，故本模式**自动失效**（no-op + 说明，不装包、不落文件、不发布）。fcitx5 侧没有更小的替代杠杆：`PerScreenDPI` 在 XWayland 上被源码强制忽略、`classicui.conf` 只有 Wayland 专用的 `ForceWaylandDPI`，而 `Font` 只放大文字——`XCBWindow::setScale(dpi/96)` 通过 `cairo_surface_set_device_scale` 缩放**整个候选窗口**（背景/边距/高亮/文字一起），所以 Font 不能替代它。
 
-**规则：一个框架只能有一个缩放权，禁止叠加。** `Xft.dpi` 的已知读者：fcitx5 XCBUI（目标）、Qt（`QXcbScreen::logicalDpi()` 直接返回 Xft.dpi；`QT_AUTO_SCREEN_SCALE_FACTOR=1` 时缩 2×，但任何显式 `QT_SCALE_FACTOR` 会再乘一次）、GTK（DPI 设置与 `GDK_SCALE` 可能叠加）、纯 Xft 应用（xterm 等，`Xft.dpi` 正是它们唯一可用的缩放）。启用本模式后必须清掉各 toolkit 的显式缩放因子；否则就是微信那种 4×。
+**规则：一个框架只能有一个缩放权，禁止叠加。** `Xft.dpi` 的已知读者：fcitx5 XCBUI（目标）、Qt（`QXcbScreen::logicalDpi()` 直接返回 Xft.dpi；`QT_AUTO_SCREEN_SCALE_FACTOR=1` 时缩 2×，但任何显式 `QT_SCALE_FACTOR` 会再乘一次）、GTK（DPI 设置与 `GDK_SCALE` 可能叠加）、纯 Xft 应用（xterm 等，`Xft.dpi` 正是它们唯一可用的缩放）。启用本模式后必须清掉各 toolkit 的显式缩放因子；否则就是微信那种 4×。微信的 per-app 消解用 `QT_SCREEN_SCALE_FACTORS=2`：显式 screen factor **覆盖** DPI 派生因子（源码 `screenSubfactor()` 注释：factors from `QT_SCREEN_SCALE_FACTORS` takes precedence over the factor computed from platform plugin DPI），而不是叠加。
+
+**doctor 检查项（默认也展示，只读）**：根窗口值是否 `== round(96 × scale)`（未 opt-in 也报 scale / 期望 / 实际与残留产物）；受管块与两个单元是否存在且内容正确；`~/.Xresources` 用户内容是否被破坏（只告警，不收敛）。
 
 **所有权与冲突（§5 的延伸）：** `~/.Xresources` 是**行级拥有**——ompinyin 只写自己的 marker 块，**绝不删除块外的用户/他人 `Xft.dpi`**。`xrdb -merge` 按文件顺序应用（后者胜），所以若块外 `Xft.dpi` 排在块后，它会赢过 ompinyin → `实际≠期望` → 重发布仍被覆盖 → **L5 明确报错（exit 1）**，不是静默错值。`observe` 把「块外 Xft.dpi」记为 `x11ForeignDpi`，`status`/`doctor`/`--json` 都提示顺序风险。运行中有人直接改根窗口属性：**无实时守护**（path 单元只听 `monitors.lua`），在下次 `install`/`doctor`/登录/缩放变化时纠正。作用域：`Xft.dpi` 是**每个 X 会话**（X display 根窗口属性），不同 OS 用户各自会话/XWayland 互不影响，`~/.Xresources` 也各自 home。
+
+**已知局限**：无 XWayland 的纯 Wayland 会话探测不到 `RESOURCE_MANAGER`，仍收敛文件与单元、但发布跳过并注记；`hyprctl` 缺失时按上面的优先级降级；`--no-x11-hidpi` 后已发布值保留到注销；marker 用 `#` 时，有真 cpp 的发行版会让 `xrdb` 在 stderr 报 `invalid preprocessing directive`（xrdb 不检查其退出码，功能正常；Arch 无 `/usr/lib/cpp`，xrdb 直接按 cpp 行指令跳过）。
 
 ---
 
@@ -382,16 +391,17 @@ XWayland 的 RandR DPI 固定为 96，故 ClassicUI 的 X11 候选框可通过 `
 
 ```text
 ompinyin install [--dsp ID|none] [--dsp-default] [--no-quanpin]
-              [--model | -s|--no-model] [--channel stable|nightly] [-y|--yes] [--dry-run]
+              [--model | -s|--no-model] [--channel stable|nightly]
+              [--x11-hidpi | --no-x11-hidpi] [-y|--yes] [--dry-run [--json]]
               [--mirror auto|cn|ghproxy|upstream|URL] [-b|--full-backup]
               [--os-override omarchy]         # 测试后门：容器/VM 内绕过 ID=omarchy 预检
 
-ompinyin update                            # L2 资产刷新到最新并重编译（--self 一并自升级）
-ompinyin switch --dsp ID [--dsp-default]   # 改/加双拼（重写 schema_list + 反查跟随 Primary）
+ompinyin update                            # L2 资产刷新到最新并重编译（--self 一并自升级；--dry-run [--json] 可预览）
+ompinyin switch --dsp ID [--dsp-default]   # 改/加双拼（重写 schema_list + 反查跟随 Primary；--mirror/-b/--dry-run [--json] 可用）
 ompinyin switch --dsp none                 # 去掉双拼，回到仅全拼
 ompinyin switch --full                     # 全拼改回 schema_list[0]（已装的双拼留在 Extra）
 ompinyin status                            # 现状 vs 终态 diff（含布局 / 资产版本 / 托盘）
-ompinyin doctor                            # 服务健康 / IM 三态 / 环境变量红线 / 触发键 / 顶栏图标 / 遗留目录
+ompinyin doctor                            # 服务健康 / IM 三态 / 环境变量红线 / 触发键 / 顶栏图标 / 候选框主题 / X11 HiDPI / 遗留目录
 ompinyin clean [--legacy]                  # 清缓存 / 老路径 ~/.config/fcitx/rime 的重复模型
 ompinyin uninstall                         # 受管文件删除 + profile 移除 rime + 托盘还原 + 候选框主题还原（系统包不动，数据目录留手动）
 ompinyin source [--preset cn|upstream]     # 独立：配置 /etc/pacman.d/mirrorlist（sudo；见下）
@@ -452,18 +462,19 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 
 ## 11. 交付范围与后续
 
-v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 状态清单 + 锁/原子写 + 断点续传 + golden 单测。后续（非阻塞）：Omarchy 插件薄壳；`uninstall --purge-packages` 待决（倾向不加，见 §12）。
+v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 候选框主题 + 可选 X11 HiDPI 兼容模式 + 状态清单 + 锁/原子写 + 断点续传 + golden 单测。后续（非阻塞）：Omarchy 插件薄壳；`uninstall --purge-packages` 待决（倾向不加，见 §12）。
 
 ---
 
 ## 12. 风险与已知局限
 
 1. **上游接口脆弱性**：依赖 `full.zip` 不含 custom.yaml。缓解 = zip 安全扫描（§5.3）。
-2. **420MB 模型下载体验**：镜像链 + 断点续传。GitHub 上游对 `wanxiang-lts-zh-hans.gram` 直连超时（35s+ 零字节），仅小文件 `full.zip` 可下；国内镜像（NJU/CNB）与加速代理稳定。因此 `cn` 默认是大陆无代理用户的正确选择；`auto`/`upstream` 对大陆用户不友好。assets 下载已加 TCP/TLS/响应头超时（10s/10s/15s），避免被墙源无限挂起。
+2. **420MB 模型下载体验**：GitHub 上游直连超时，故 `cn` 是大陆无代理用户的默认；镜像链 / 断点续传 / 超时细节见 §5.3。
 3. 终端候选窗不可见为 Hyprland 渲染器 bug，工具域外。
 4. **改 `omarchy.tray.pinned`**：写数组是整键覆盖，必须读→合并→写回，否则吞 pin。外壳没在跑时写 pin 失败。`omarchy update` 若重排 layout，再跑一次 `ompinyin` 收敛重贴。
 5. 待决策：uninstall 是否加 `--purge-packages`（当前倾向不加）。
-6. **顶栏 IM 图标在 foot 内不刷新**（仅显示问题，打字/切换/候选正常）：根因是 fcitx5 notificationitem 的 SNI 图标为空且 IM 切换只发 `dbusmenu.LayoutUpdated`、不发 `NewIcon`，quickshell 靠 `NewIcon` 重读图标。**Omarchy 4.0.2 已解除**（foot 内 `Alt+Space` 切中英图标自动跟随）。兜底：`omarchy restart shell` 强制重枚举 SNI；待办方向是换直接读 `fcitx5-remote` / `-n` 的指示器或上报上游。
+6. **顶栏 IM 图标在 foot 内不刷新**（仅显示问题）：Omarchy < 4.0.2 的 quickshell 靠 SNI `NewIcon` 重读图标，而 IM 切换只发 `dbusmenu.LayoutUpdated`；**4.0.2 已解除**。兜底 `omarchy restart shell` 强制重枚举 SNI。
+7. **X11 HiDPI 是全局缩放权**（§6.7）：`Xft.dpi` 会让同时设了显式缩放因子的 X11/Electron 应用二次放大（实测微信 4×），且多屏混合 DPI 无单值解；故默认只诊断，`force_zero_scaling=false` 时自动 no-op。
 
 ---
 
@@ -498,7 +509,7 @@ v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 状态清单
 
 | 层 | 环境 | 覆盖 | 成本 |
 |---|---|---|---|
-| T0 Stub 单测 | 临时 HOME + fake systemctl/rime_deployer/pacman + stub `assets.ResolveStableTag` | 五层 converge、golden、profile roundtrip、tray 合并、幂等零扰动（~70% 代码路径），CI 用 | 秒级 |
+| T0 Stub 单测 | 临时 HOME + fake systemctl/rime_deployer/pacman + stub `assets.ResolveStableTag` | 五层 converge、golden、profile roundtrip、tray 合并、幂等零扰动（T0 语句覆盖率 ~65%），CI 用 | 秒级 |
 | T1 Distrobox Arch 容器 | `distrobox create --image archlinux:latest` | L1–L3 全真实；**需 `--os-override`** | 分钟级 |
 | T2 systemd-nspawn（按需） | pacstrap rootfs + `systemd-nspawn -bD` | L4 服务层：stop→写→start；drop-in 真生效 | 中 |
 | T3 QEMU/KVM 全新 Omarchy | 官方 ISO + qcow2 backing-file 基线快照 | 端到端：Wayland/Hyprland、IM 三态、herdr、F4、**顶栏图标可见** | 小时级 |

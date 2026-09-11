@@ -111,6 +111,5 @@ Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信；�
 
 ## 说明
 
-- 装机助手是「能力」，不是仓库规则；本文件是遵循 [Agent Skills 标准](https://agentskills.io/specification) 的 **SKILL**，按需求按需加载（pi / Claude Code / Codex 等支持该标准的 harness 都可用）。
-- 本文件是**给 agent 的流程打包**；内容与 README「用 AI / Agent 部署中文输入法」一致。任何 agent 的兜底是 README。
-- 通用位置（跨 harness）：项目仓库用 `.agents/skills/ompinyin-install/`；想要本机全局用，放到对应 harness 目录（pi → `~/.pi/agent/skills/ompinyin-install/`，Claude Code → `~/.claude/skills/ompinyin-install/`，Codex → `~/.codex/skills/ompinyin-install/`）。
+- 本文件遵循 [Agent Skills 标准](https://agentskills.io/specification)，按需加载；事实与 README「AI / Agent 装机」一致，冲突时以 README / `ompinyin --help` 为准。
+- 跨 harness 位置：仓库内 `.agents/skills/ompinyin-install/`；装到本机全局则放入 `~/.pi/agent/skills/`、`~/.claude/skills/`、`~/.codex/skills/` 等对应目录。
