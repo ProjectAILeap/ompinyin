@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
 )
@@ -67,7 +68,7 @@ const DefaultFont = "Sans"
 // Run is the exec seam for running the hook script (`bash <hook>`), which
 // regenerates the theme files from the current Omarchy colors (T0 stubs it).
 var Run = func(name string, args ...string) error {
-	c := exec.Command(name, args...)
+	c := execcmd.Command(name, args...)
 	return c.Run()
 }
 
@@ -105,7 +106,7 @@ var Reload = func() error {
 // Pango falls back to a CJK font via fontconfig either way; this just makes
 // Latin/candidate glyphs match the rest of the desktop.
 var CurrentFont = func() string {
-	out, err := exec.Command("omarchy-font-current").Output()
+	out, err := execcmd.Command("omarchy-font-current").Output()
 	if err != nil {
 		return DefaultFont
 	}

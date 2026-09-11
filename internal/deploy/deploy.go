@@ -25,15 +25,16 @@ package deploy
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 )
 
 // Run is the exec seam for tests (fake rime_deployer in T0). dir is the
 // working directory ("" = current).
 var Run = func(dir, name string, args ...string) error {
-	c := exec.Command(name, args...)
+	c := execcmd.Command(name, args...)
 	c.Dir = dir
 	return c.Run()
 }

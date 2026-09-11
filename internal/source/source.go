@@ -17,9 +17,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 )
 
 // MirrorlistPath is the system pacman mirror list this helper manages.
@@ -56,7 +58,7 @@ var (
 		if !sudoTTY() {
 			args = append([]string{"-n"}, args...)
 		}
-		c := exec.Command("sudo", args...)
+		c := execcmd.Command("sudo", args...)
 		c.Stdin = os.Stdin
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
@@ -246,10 +248,17 @@ func Ensure(args EnsureArgs) (Result, error) {
 
 // pruneOldBackups keeps at most keep newest mirrorlist.bak-* files in the dir,
 // removing the rest as root. Best-effort: failures are ignored (a stale backup
-// is harmless). GNU xargs (Arch) supports -r.
+// is harmless). The old form quoted the glob (`%q`), so `ls` received a literal
+// path, found nothing, and the pipeline never removed a single file.
 func pruneOldBackups(path string) {
-	dir := path[:strings.LastIndex(path, "/")]
-	cmd := fmt.Sprintf("ls -1t %q 2>/dev/null | tail -n +6 | xargs -r rm --",
-		dir+"/mirrorlist.bak-*")
+	dir := filepath.Dir(path)
+	cmd := fmt.Sprintf(
+		"find %s -maxdepth 1 -type f -name 'mirrorlist.bak-*' -printf '%%T@ %%p\\n' 2>/dev/null | sort -rn | tail -n +6 | cut -d' ' -f2- | xargs -r rm --",
+		shellQuote(dir))
 	_ = RunSudo("bash", "-c", cmd)
+}
+
+// shellQuote wraps s for safe embedding in the bash -c string above.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

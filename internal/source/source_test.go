@@ -3,6 +3,10 @@ package source
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -182,5 +186,40 @@ func TestEnsureReadErrorFatal(t *testing.T) {
 	}
 	if sudoCalled {
 		t.Error("read error must abort before sudo")
+	}
+}
+
+// TestPruneOldBackupsKeepsNewestFive locks the pruning pipeline: the old form
+// quoted the glob (`%q`), so `ls` got a literal path and never removed a file.
+func TestPruneOldBackupsKeepsNewestFive(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().Add(-time.Hour)
+	for i := 0; i < 8; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("mirrorlist.bak-%d", 1000+i))
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mt := base.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	orig := RunSudo
+	defer func() { RunSudo = orig }()
+	RunSudo = func(args ...string) error {
+		if len(args) >= 2 && args[0] == "bash" {
+			return exec.Command(args[0], args[1:]...).Run() // run the pipeline locally
+		}
+		return nil
+	}
+
+	pruneOldBackups(filepath.Join(dir, "mirrorlist"))
+	got, err := filepath.Glob(filepath.Join(dir, "mirrorlist.bak-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 5 {
+		t.Errorf("kept %d backups, want 5: %v", len(got), got)
 	}
 }

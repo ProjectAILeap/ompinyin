@@ -4,8 +4,9 @@ package pkgs
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 )
 
 // Needed lists the required packages (§3 L1) — the MINIMAL set whose
@@ -35,14 +36,14 @@ const X11HiDPIPackage = "xorg-xrdb"
 
 // Run is the exec seam for tests (fake pacman in T0).
 var Run = func(name string, args ...string) error {
-	c := exec.Command(name, args...)
+	c := execcmd.Command(name, args...)
 	return c.Run()
 }
 
 // runInteractive executes with the caller's terminal wired in (sudo password
 // prompt, pacman progress)。
 var runInteractive = func(name string, args ...string) error {
-	c := exec.Command(name, args...)
+	c := execcmd.Command(name, args...)
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr

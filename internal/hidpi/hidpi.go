@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 )
 
 const (
@@ -238,5 +239,5 @@ func ReadScale(monitorsJSON, monitorsLua, xresources []byte) (float64, string) {
 // L4 bridge fully fakeable in T0 without executing against the developer's X
 // server.
 var Run = func(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+	return execcmd.Command(name, args...).CombinedOutput()
 }

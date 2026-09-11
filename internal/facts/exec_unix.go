@@ -2,10 +2,14 @@
 
 package facts
 
-import "os/exec"
+import (
+	"os/exec"
+
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
+)
 
 func defaultRun(name string, args ...string) error {
-	return exec.Command(name, args...).Run()
+	return execcmd.Command(name, args...).Run()
 }
 
 func defaultLookPath(name string) (string, error) {

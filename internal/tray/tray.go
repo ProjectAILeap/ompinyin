@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
 )
 
@@ -231,7 +231,7 @@ func HasPin(pinned []string) bool {
 
 // Run is the exec seam for tests.
 var Run = func(name string, args ...string) error {
-	return exec.Command(name, args...).Run()
+	return execcmd.Command(name, args...).Run()
 }
 
 // RestartShell restarts the Omarchy shell so it re-enumerates the SNI tray
@@ -398,8 +398,8 @@ func mustTrayEntry(entry map[string]any, pinArr []any) map[string]any {
 // quickshell instance (`quickshell -n -p /usr/share/omarchy/shell`); the
 // `omarchy-shell` name is kept as a fallback for older layouts.
 var ShellRunning = func() bool {
-	if exec.Command("pgrep", "-f", "omarchy-shell").Run() == nil {
+	if execcmd.Command("pgrep", "-f", "omarchy-shell").Run() == nil {
 		return true
 	}
-	return exec.Command("pgrep", "-f", "/usr/share/omarchy/shell").Run() == nil
+	return execcmd.Command("pgrep", "-f", "/usr/share/omarchy/shell").Run() == nil
 }

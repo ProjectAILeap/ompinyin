@@ -14,12 +14,13 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 )
 
 const (
@@ -129,10 +130,18 @@ func replace(tag, asset string) error {
 	dir := filepath.Dir(exe)
 	base := downloadBase + "/" + tag + "/"
 
-	csPath := filepath.Join(dir, ".ompinyin.checksums")
-	binPath := filepath.Join(dir, ".ompinyin.new")
-	defer os.Remove(csPath)
-	defer os.Remove(binPath)
+	// Stage the downloads in a private temp dir, not next to the binary: the
+	// exe often lives in a root-owned dir (/usr/local/bin), where os.Create
+	// would fail BEFORE the sudo fallback could ever run — making the
+	// documented "sudo when not writable" path unreachable. The sudo branch
+	// below installs from this dir instead.
+	tmpDir, err := os.MkdirTemp("", "ompinyin-self-*")
+	if err != nil {
+		return fmt.Errorf("创建临时目录：%w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	csPath := filepath.Join(tmpDir, "checksums.txt")
+	binPath := filepath.Join(tmpDir, "ompinyin.new")
 
 	if err := Fetch(base+"checksums.txt", csPath); err != nil {
 		return fmt.Errorf("下载 checksums.txt：%w", err)
@@ -154,7 +163,11 @@ func replace(tag, asset string) error {
 
 	bak := filepath.Join(dir, "."+filepath.Base(exe)+".ompinyin.bak")
 	if err := copyFile(exe, bak); err != nil {
-		return fmt.Errorf("备份旧程序 %s：%w", bak, err)
+		// The same permission wall as the binary itself: keep the promise of a
+		// pre-upgrade backup by escalating just this copy.
+		if serr := runSudo("cp", "-p", exe, bak); serr != nil {
+			return fmt.Errorf("备份旧程序 %s：%w", bak, err)
+		}
 	}
 	if err := os.Chmod(binPath, 0o755); err != nil {
 		return err
@@ -226,7 +239,7 @@ func runSudo(args ...string) error {
 	if !hasTTY() {
 		args = append([]string{"-n"}, args...)
 	}
-	c := exec.Command("sudo", args...)
+	c := execcmd.Command("sudo", args...)
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr

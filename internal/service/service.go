@@ -6,14 +6,15 @@ package service
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 )
 
 // Run is the exec seam for tests (fake systemctl in T0).
 var Run = func(name string, args ...string) error {
-	c := exec.Command(name, args...)
+	c := execcmd.Command(name, args...)
 	c.Stdout = os.Stderr
 	c.Stderr = os.Stderr
 	return c.Run()
@@ -106,7 +107,7 @@ func DaemonReload() error {
 
 // RunOutput is the output seam for tests.
 var RunOutput = func(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).Output()
+	return execcmd.Command(name, args...).Output()
 }
 
 // RemoteState runs `fcitx5-remote` and returns 0/1/2 (0=inactive, 1=EN, 2=中文).
