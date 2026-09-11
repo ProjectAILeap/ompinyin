@@ -84,3 +84,16 @@ func SudoArgs(hasTTY bool, args ...string) []string {
 	}
 	return append(argv, args...)
 }
+
+// Cleanup runs fn with a cancellation-immune exec context, restoring the
+// previously installed one afterwards. The long children (rime_deployer,
+// pacman, a 420MB download) must stay cancellable — but teardown must not be:
+// the first SIGINT cancels the run context, so a restart or daemon-reload
+// issued from a defer would return context.Canceled without spawning anything
+// and leave the user with no input method (§16 invariant 14, 评审 P0-4).
+func Cleanup(fn func()) {
+	prev := currentContext()
+	SetContext(context.Background())
+	defer SetContext(prev)
+	fn()
+}

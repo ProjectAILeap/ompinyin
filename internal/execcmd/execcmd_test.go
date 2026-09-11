@@ -49,3 +49,31 @@ func TestSudoArgs(t *testing.T) {
 		t.Errorf("tty: want 'sudo pacman -S fcitx5', got %q", got)
 	}
 }
+
+// TestCleanupRunsWithFreshContext: teardown work must survive a canceled run
+// context. Without this, the SIGINT that aborts a deploy also disabled the
+// restart issued from the stop window's defer and left the user without an
+// input method (§16 invariant 14).
+func TestCleanupRunsWithFreshContext(t *testing.T) {
+	orig := currentContext()
+	defer SetContext(orig)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	SetContext(canceled)
+
+	// Sanity: the canceled run context really does block children.
+	if err := Command("true").Run(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("precondition: canceled context must abort the child, got %v", err)
+	}
+
+	Cleanup(func() {
+		if err := Command("true").Run(); err != nil {
+			t.Errorf("Command inside Cleanup must run despite the canceled run context, got %v", err)
+		}
+	})
+
+	if currentContext() != canceled {
+		t.Error("Cleanup must restore the previously installed context")
+	}
+}

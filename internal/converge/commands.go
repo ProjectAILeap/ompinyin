@@ -549,7 +549,7 @@ func Uninstall(opts Options) int {
 			opts.errf("[警告] daemon-reload：%v", err)
 		}
 		if err := service.Start(unit); err != nil {
-			opts.errf("[失败] 重启 %s：%v（请手动 `systemctl --user start %s`）", unit, err, unit)
+			opts.errf("[失败] 重启 %s：%v（请手动 `systemctl --user reset-failed %s && systemctl --user start %s`）", unit, err, unit, unit)
 			return ExitExecFail
 		}
 	}

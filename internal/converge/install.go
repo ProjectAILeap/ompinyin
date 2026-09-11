@@ -458,7 +458,7 @@ func runStopWindow(opts Options, backupDir string, cur *observe.Current, d catal
 	defer func() {
 		if err := service.Start(unit); err != nil {
 			if stopped {
-				opts.errf("[失败] 无法重启 %s（请立即手动 `systemctl --user start %s`，否则无输入法可用）：%v", unit, unit, err)
+				opts.errf("[失败] 无法重启 %s（请立即手动 `systemctl --user reset-failed %s && systemctl --user start %s`，否则无输入法可用）：%v", unit, unit, unit, err)
 			} else {
 				opts.errf("[失败] L4 start %s：%v", unit, err)
 			}
@@ -798,7 +798,7 @@ func ApplyX11HiDPI(opts Options) (code int) {
 	// so it must downgrade the exit code and say how to recover (评审 P0-4).
 	defer func() {
 		if err := service.Start(unit); err != nil {
-			opts.errf("[失败] 重启 %s：%v（请立即手动 `systemctl --user start %s`，否则无输入法可用）", unit, err, unit)
+			opts.errf("[失败] 重启 %s：%v（请立即手动 `systemctl --user reset-failed %s && systemctl --user start %s`，否则无输入法可用）", unit, err, unit, unit)
 			if code == ExitOK {
 				code = ExitExecFail
 			}

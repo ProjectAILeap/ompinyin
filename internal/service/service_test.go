@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -136,4 +137,70 @@ func TestRemoteState(t *testing.T) {
 	if _, err := RemoteState(); err == nil {
 		t.Error("transport failure must error")
 	}
+}
+
+// TestStartRetriesAfterResetFailed: a unit that exited immediately (another
+// fcitx5 owning org.fcitx.Fcitx5) trips systemd's start rate limit under
+// Restart=always, and then even a manual start fails with "start request
+// repeated too quickly" — so ompinyin must clear the limit and retry once
+// instead of telling the user to run a command that cannot work.
+func TestStartRetriesAfterResetFailed(t *testing.T) {
+	orig := Run
+	defer func() { Run = orig }()
+
+	t.Run("burst limit cleared, retry succeeds", func(t *testing.T) {
+		var calls []string
+		attempts := 0
+		Run = func(name string, args ...string) error {
+			calls = append(calls, strings.Join(args, " "))
+			switch args[1] {
+			case "reset-failed":
+				return nil
+			case "start":
+				attempts++
+				if attempts == 1 {
+					return errors.New("start request repeated too quickly")
+				}
+			}
+			return nil
+		}
+		if err := Start("omarchy-fcitx5.service"); err != nil {
+			t.Fatalf("Start must succeed after reset-failed + retry, got %v", err)
+		}
+		want := []string{"--user start omarchy-fcitx5.service", "--user reset-failed omarchy-fcitx5.service", "--user start omarchy-fcitx5.service"}
+		if strings.Join(calls, " | ") != strings.Join(want, " | ") {
+			t.Errorf("call sequence = %v, want %v", calls, want)
+		}
+	})
+
+	t.Run("retry still failing names the bus-name holder", func(t *testing.T) {
+		Run = func(name string, args ...string) error {
+			if args[1] == "reset-failed" {
+				return nil
+			}
+			return errors.New("exit 1")
+		}
+		err := Start("omarchy-fcitx5.service")
+		if err == nil {
+			t.Fatal("a failing retry must be reported")
+		}
+		for _, want := range []string{"reset-failed", "pgrep -x fcitx5", "journalctl"} {
+			if !contains(err.Error(), want) {
+				t.Errorf("error must mention %q, got %q", want, err.Error())
+			}
+		}
+	})
+
+	t.Run("reset-failed failing is reported too", func(t *testing.T) {
+		Run = func(name string, args ...string) error { return errors.New("exit 1") }
+		err := Start("omarchy-fcitx5.service")
+		if err == nil {
+			t.Fatal("a failing start must be reported")
+		}
+		for _, want := range []string{"reset-failed", "journalctl"} {
+			if !contains(err.Error(), want) {
+				t.Errorf("error must mention %q, got %q", want, err.Error())
+			}
+		}
+	})
 }

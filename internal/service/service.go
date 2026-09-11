@@ -86,10 +86,31 @@ func Stop(unit string) error {
 	return nil
 }
 
-// Start starts the unit.
+// Start starts the unit. Teardown must not be cancellable: after the first
+// SIGINT the run context is already canceled, so a restart issued from a defer
+// would return context.Canceled without spawning anything and leave the user
+// with no input method (§16 invariant 14, 评审 P0-4).
+//
+// A failed start then clears systemd's rate limit (`reset-failed`) and retries
+// exactly once: a unit whose process exits immediately — e.g. because another
+// fcitx5 already owned org.fcitx.Fcitx5 — trips StartLimitBurst under
+// Restart=always, after which every start fails with "start request repeated
+// too quickly". The manual `systemctl --user start` the caller prints could not
+// work in that state either.
 func Start(unit string) error {
-	if err := Run("systemctl", "--user", "start", unit); err != nil {
-		return fmt.Errorf("start %s: %w (check `journalctl --user -u %s`)", unit, err, unit)
+	var err error
+	execcmd.Cleanup(func() { err = startUnit(unit) })
+	return err
+}
+
+func startUnit(unit string) error {
+	if first := Run("systemctl", "--user", "start", unit); first != nil {
+		if rerr := Run("systemctl", "--user", "reset-failed", unit); rerr != nil {
+			return fmt.Errorf("start %s: %w (reset-failed 亦失败：%v；check `journalctl --user -u %s`)", unit, first, rerr, unit)
+		}
+		if err := Run("systemctl", "--user", "start", unit); err != nil {
+			return fmt.Errorf("start %s: %w (已 reset-failed 并重试一次；若仍失败，多半是有非单元实例占着 org.fcitx.Fcitx5：`pgrep -x fcitx5`；check `journalctl --user -u %s`)", unit, err, unit)
+		}
 	}
 	return nil
 }
@@ -100,9 +121,13 @@ func IsActive(unit string) bool {
 	return err == nil
 }
 
-// DaemonReload runs systemctl --user daemon-reload (after drop-in writes).
+// DaemonReload runs systemctl --user daemon-reload (after drop-in writes), with
+// the same cancellation immunity as Start: a half-applied unit reload in a
+// teardown path would strand systemd on stale unit state.
 func DaemonReload() error {
-	return Run("systemctl", "--user", "daemon-reload")
+	var err error
+	execcmd.Cleanup(func() { err = Run("systemctl", "--user", "daemon-reload") })
+	return err
 }
 
 // RunOutput is the output seam for tests.
