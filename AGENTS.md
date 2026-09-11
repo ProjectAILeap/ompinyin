@@ -102,7 +102,7 @@ CI（**绝不**跑系统操作、**绝不**碰网络）：gofmt → `go vet` →
 
 ## Git 工作流
 
-- **提交风格**：Conventional Commits（`fix:` · `feat:` · `docs:` · `refactor:` · `chore:` · `test:`）；一次提交只做一个逻辑变更；包级改动加作用域（`fix(L1): …`）。goreleaser 的 changelog 会排除 `docs:`/`chore:`/`test:` —— 别乱用这些前缀。
+- **提交风格**：Conventional Commits（`fix:` · `feat:` · `docs:` · `refactor:` · `chore:` · `test:`）；一次提交只做一个逻辑变更；包级改动加作用域（`fix(L1): …`）。goreleaser 的 changelog 会排除 `docs`/`chore`/`test`/`refactor`（**含作用域形式**，如 `test(assets):`）—— 用户可见的改动必须走 `feat`/`fix`，别把真改动藏进这四个前缀；反过来，纯内部改动（重构、测试、文档）就应当用它们，别让用户看到无关条目（v1.2.0 的 notes 曾混进 5 条 refactor + 2 条 scoped test）。
 - **发布**：在 `main` 上打 `v*` tag → goreleaser 构建（`.goreleaser.yaml`）。changelog 由 git log 生成 → 提交正文写成人能读的。生成内容形状变化应走 `catalog.ManagedFormat`，而不是一个无说明的版本号跳跃。
 - **绝不提交**：`bin/`、`dist/`、生成的 rime 产物、机器本地路径、密钥（见 `.gitignore`）。
 - **CI 纪律**：workflow 里不加网络、不加系统操作（T0 假实现 + `--mirror <dir>`）。

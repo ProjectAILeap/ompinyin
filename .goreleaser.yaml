@@ -55,7 +55,12 @@ release:
 changelog:
   sort: asc
   filters:
+    # Anchored to the conventional-commit TYPE, scope included: a plain
+    # "^test:" never matched "test(assets):", which is how internal-only
+    # commits (5 refactor + 2 test) showed up in the v1.2.0 changelog.
+    # refactor belongs here too: by definition it changes no behaviour.
     exclude:
-      - "^docs:"
-      - "^chore:"
-      - "^test:"
+      - "^docs(\\([^)]*\\))?:"
+      - "^chore(\\([^)]*\\))?:"
+      - "^test(\\([^)]*\\))?:"
+      - "^refactor(\\([^)]*\\))?:"
