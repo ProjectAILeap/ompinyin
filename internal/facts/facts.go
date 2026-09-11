@@ -78,27 +78,39 @@ func readOSFrom(path string) (OS, error) {
 // IsOmarchy reports whether ID is the Omarchy distribution.
 func IsOmarchy(id string) bool { return id == "omarchy" }
 
-// OctagramPresent reports whether the octagram librime plugin is available.
-// It checks known plugin paths and falls back to assuming the bundled librime
-// package provides it.
-func OctagramPresent() bool {
-	candidates := []string{
-		"/usr/lib/rime-plugins/octagram/octagram.so",
-		"/usr/lib/rime-plugins/octagram.so",
-		"/usr/lib/librime-plugin-octagram.so",
-	}
-	for _, p := range candidates {
+// octagramPluginPaths are the on-disk locations of the librime octagram plugin
+// on Arch/Omarchy (librime ships it at /usr/lib/rime-plugins/librime-octagram.so).
+var octagramPluginPaths = []string{
+	"/usr/lib/rime-plugins/librime-octagram.so",
+	"/usr/lib/rime-plugins/octagram/octagram.so",
+	"/usr/lib/rime-plugins/octagram.so",
+	"/usr/lib/librime-plugin-octagram.so",
+}
+
+// octagramGlob catches renamed/vendored plugin builds in the same directory.
+var octagramGlob = func() []string {
+	matches, _ := filepath.Glob("/usr/lib/rime-plugins/*octagram*")
+	return matches
+}
+
+// octagramOnDisk is the real probe: plugin FILES only. It deliberately does NOT
+// fall back to "librime is installed": that fallback returned true on any host
+// with the package, which made Collect's "librime installed but plugin missing"
+// failure branch unreachable and let a genuinely missing plugin pass the
+// precheck only to fail later, mid-convergence. A not-yet-installed librime is
+// handled by Collect (L1 installs it, and the plugin ships inside it).
+func octagramOnDisk() bool {
+	for _, p := range octagramPluginPaths {
 		if _, err := os.Stat(p); err == nil {
 			return true
 		}
 	}
-	matches, _ := filepath.Glob("/usr/lib/rime-plugins/*octagram*")
-	if len(matches) > 0 {
-		return true
-	}
-	// octagram ships bundled with the librime package on Arch/Omarchy.
-	return PkgInstalled("librime")
+	return len(octagramGlob()) > 0
 }
+
+// OctagramProbe is the octagram probe Collect consumes. A var so T0 stays
+// hermetic: CI runners have no librime at all.
+var OctagramProbe = octagramOnDisk
 
 // PkgInstalled reports whether a pacman package is installed.
 func PkgInstalled(name string) bool {
@@ -242,14 +254,15 @@ func Collect(osOverride, home string) (*PrecheckResult, error) {
 		}
 	}
 
-	r.OctagramOK = OctagramPresent()
+	r.OctagramOK = OctagramProbe()
 	if !r.OctagramOK {
 		if PkgInstalled("librime") {
-			r.Failures = append(r.Failures, "librime installed but octagram plugin missing (needed by the wanxiang LMDG grammar)")
+			r.Failures = append(r.Failures, "librime installed but the octagram plugin is missing (needed by the wanxiang LMDG grammar); reinstall librime")
 		} else {
 			// librime 不在本机 → L1 会安装它，octagram 随 librime 带入（§3 L1）。
-			// 这里不拦，避免全新机器在 L1 之前被预检卡死。
+			// 这里不拦，避免全新机器在 L1 之前被预检卡死；但仍然告知。
 			r.OctagramOK = true
+			r.ToolWarnings = append(r.ToolWarnings, "octagram 插件未就绪（librime 未装，L1 会安装）")
 		}
 	}
 	// Informational only: the trigger keys are written unconditionally (§6.2).

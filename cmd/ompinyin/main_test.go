@@ -132,6 +132,18 @@ func TestExitCodesDocumented(t *testing.T) {
 		"install --dsp zrm --dsp flypy": converge.ExitUsage,
 		"install --dsp-default":         converge.ExitUsage,
 		"install --model --no-model":    converge.ExitUsage,
+		// stray positional arguments are usage errors on EVERY subcommand, not
+		// silently ignored (`ompinyin status foo` used to exit 0)
+		"install foo":                      converge.ExitUsage,
+		"update foo":                       converge.ExitUsage,
+		"switch --dsp zrm foo":             converge.ExitUsage,
+		"status foo":                       converge.ExitUsage,
+		"doctor foo":                       converge.ExitUsage,
+		"clean foo":                        converge.ExitUsage,
+		"uninstall foo":                    converge.ExitUsage,
+		"source foo":                       converge.ExitUsage,
+		"install --dsp none --dsp-default": converge.ExitUsage,
+		"switch --dsp none --no-quanpin":   converge.ExitUsage,
 	}
 	for args, want := range cases {
 		argv := splitArgs(args)
@@ -175,6 +187,8 @@ func stubFakeHost(t *testing.T, home string) {
 	facts.OSReleasePath = osRel
 	facts.Run = func(name string, args ...string) error { return nil }
 	facts.LookPath = func(string) (string, error) { return "/usr/bin/omarchy", nil }
+	// CI has no librime; the real probe now checks plugin files, so stub it.
+	facts.OctagramProbe = func() bool { return true }
 	pkgs.Run = func(name string, args ...string) error { return nil }
 
 	service.SystemUnitDirs = nil
@@ -199,6 +213,7 @@ func stubFakeHost(t *testing.T, home string) {
 		facts.OSReleasePath = "/etc/os-release"
 		facts.Run = nil
 		facts.LookPath = nil
+		facts.OctagramProbe = factsOctagramProbeProd
 		pkgs.Run = nil
 		service.SystemUnitDirs = []string{"/etc/systemd/user", "/usr/lib/systemd/user"}
 		service.Run = nil
@@ -209,6 +224,10 @@ func stubFakeHost(t *testing.T, home string) {
 		assets.ResolveStableTag = nil
 	})
 }
+
+// factsOctagramProbeProd preserves the production octagram probe across tests
+// (stubFakeHost replaces it: CI has no librime).
+var factsOctagramProbeProd = facts.OctagramProbe
 
 func mustWrite(path, content string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -247,3 +247,78 @@ func TestX11HiDPIForeignAssignmentIsSurfaced(t *testing.T) {
 		t.Errorf("foreign assignment must be surfaced: %s", got.Detail)
 	}
 }
+
+// TestGrammarCompiledCoversEverySchema: every enabled schema must carry the
+// model (invariant 5). Probing only schema_list[0] would pass a host whose
+// second (double-pinyin) schema lost it.
+func TestGrammarCompiledCoversEverySchema(t *testing.T) {
+	d := catalog.Desired{Primary: "quanpin", Extra: []string{"zrm"}, Model: true, Channel: "stable"}
+	dir := t.TempDir()
+	build := filepath.Join(dir, "build")
+	if err := os.MkdirAll(build, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := convergedHost()
+	c.RimeDir = dir
+
+	good := "grammar:\n  language: " + catalog.GrammarLanguage + "\n  collocation_penalty: -14\n"
+	for _, s := range d.SchemaList() {
+		if err := os.WriteFile(filepath.Join(build, s+".schema.yaml"), []byte(good), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := find(t, TerminalState(d, c), "grammar 编入"); !got.OK {
+		t.Errorf("both schemas compiled must pass: %s", got.Detail)
+	}
+
+	// schema_list[0] stays good; the double-pinyin schema lost the model
+	if err := os.WriteFile(filepath.Join(build, "double_pinyin.schema.yaml"), []byte("grammar:\n  language: other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := find(t, TerminalState(d, c), "grammar 编入"); got.OK {
+		t.Error("a second schema without the model must fail the check")
+	}
+}
+
+// TestFindFileBounded: the exact candidates win, and the fallback search is
+// depth-bounded (it used to walk the whole /usr/share/omarchy tree on every
+// doctor).
+func TestFindFileBounded(t *testing.T) {
+	root := t.TempDir()
+	// shallow hit: root/default/environment.d/<name>
+	shallow := filepath.Join(root, "default", "environment.d")
+	if err := os.MkdirAll(shallow, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shallow, "10-omarchy-fcitx.conf"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !findFileBounded(nil, root, "10-omarchy-fcitx.conf", 4) {
+		t.Error("a file within the depth bound must be found")
+	}
+
+	// deep hit: root/a/b/c/d/e/<name> is beyond depth 4 and must be ignored
+	deep := filepath.Join(root, "a", "b", "c", "d", "e")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "10-omarchy-fcitx.conf"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	empty := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(empty, "a", "b", "c", "d", "e"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(empty, "a", "b", "c", "d", "e", "10-omarchy-fcitx.conf"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if findFileBounded(nil, empty, "10-omarchy-fcitx.conf", 4) {
+		t.Error("a file beyond the depth bound must not be found")
+	}
+
+	// an exact candidate path is honored regardless of depth
+	exact := filepath.Join(empty, "a", "b", "c", "d", "e", "10-omarchy-fcitx.conf")
+	if !findFileBounded([]string{exact}, t.TempDir(), "10-omarchy-fcitx.conf", 1) {
+		t.Error("an exact candidate path must be honored")
+	}
+}

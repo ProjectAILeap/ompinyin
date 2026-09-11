@@ -135,31 +135,39 @@ func themeCheck(c *observe.Current) Check {
 	return Check{Name: "候选框主题", OK: ok, Detail: detail}
 }
 
-// checkGrammarCompiled greps the compiled schema for the model language and
-// the official collocation penalty (真机 checklist §9).
+// checkGrammarCompiled greps the compiled schemas for the model language and
+// the official collocation penalty (真机 checklist §9). EVERY enabled schema
+// must carry it (§16 invariant 5): probing only schema_list[0] would pass a
+// host whose second (double-pinyin) schema lost the model.
 func checkGrammarCompiled(d catalog.Desired, c *observe.Current) Check {
-	probe := d.SchemaList()
-	if len(probe) == 0 {
+	schemas := d.SchemaList()
+	if len(schemas) == 0 {
 		return Check{Name: "grammar 编入", OK: false, Detail: "schema_list 为空"}
 	}
-	p := filepath.Join(c.RimeDir, "build", probe[0]+".schema.yaml")
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return Check{Name: "grammar 编入", OK: false, Detail: "无法确认 grammar 编入（build 产物缺失，见上）"}
+	for _, s := range schemas {
+		b, err := os.ReadFile(filepath.Join(c.RimeDir, "build", s+".schema.yaml"))
+		if err != nil {
+			return Check{Name: "grammar 编入", OK: false, Detail: s + " 无法确认 grammar 编入（build 产物缺失，见上）"}
+		}
+		txt := string(b)
+		// rime 编译产物会把值加引号（如 collocation_penalty: "-14"），检查须容忍引号。
+		hasLang := strings.Contains(txt, catalog.GrammarLanguage)
+		hasPenalty := strings.Contains(txt, fmt.Sprintf("collocation_penalty: %d", catalog.GrammarCollocationPenalty)) ||
+			strings.Contains(txt, fmt.Sprintf("collocation_penalty: \"%d\"", catalog.GrammarCollocationPenalty))
+		switch {
+		case hasLang && hasPenalty:
+			// ok
+		case hasLang:
+			return Check{Name: "grammar 编入", OK: false, Detail: s + " 含模型但惩罚项非官方值（可能被其它工具改写）"}
+		default:
+			return Check{Name: "grammar 编入", OK: false, Detail: s + " 未编入万象 grammar（重跑一次收敛）"}
+		}
 	}
-	s := string(b)
-	// rime 编译产物会把值加引号（如 collocation_penalty: "-14"），检查须容忍引号。
-	hasLang := strings.Contains(s, catalog.GrammarLanguage)
-	hasPenalty := strings.Contains(s, fmt.Sprintf("collocation_penalty: %d", catalog.GrammarCollocationPenalty)) ||
-		strings.Contains(s, fmt.Sprintf("collocation_penalty: \"%d\"", catalog.GrammarCollocationPenalty))
-	switch {
-	case hasLang && hasPenalty:
-		return Check{Name: "grammar 编入", OK: true, Detail: probe[0] + " 含 " + catalog.GrammarLanguage + " + 官方惩罚项"}
-	case hasLang:
-		return Check{Name: "grammar 编入", OK: false, Detail: probe[0] + " 含模型但惩罚项非官方值（可能被其它工具改写）"}
-	default:
-		return Check{Name: "grammar 编入", OK: false, Detail: probe[0] + " 未编入万象 grammar（重跑一次收敛）"}
+	detail := schemas[0] + " 含 " + catalog.GrammarLanguage + " + 官方惩罚项"
+	if len(schemas) > 1 {
+		detail = fmt.Sprintf("schema_list 中 %d 个方案均含 %s + 官方惩罚项", len(schemas), catalog.GrammarLanguage)
 	}
+	return Check{Name: "grammar 编入", OK: true, Detail: detail}
 }
 
 // Doctor runs the full health checklist (§7 doctor).
@@ -209,21 +217,57 @@ func dropInDetail(c *observe.Current) string {
 }
 
 // Omarchy injects the IM environment via its default environment.d file;
-// check the known path (and a fallback walk) for 10-omarchy-fcitx.conf
-func checkEnvRedLine() (bool, string) {
-	omarchyConf := "/usr/share/omarchy/default/environment.d/10-omarchy-fcitx.conf"
+// check the known paths (and a BOUNDED fallback walk) for 10-omarchy-fcitx.conf.
+
+// omarchyEnvFileCandidates are the known locations of Omarchy's IM environment
+// injection.
+var omarchyEnvFileCandidates = []string{
+	"/usr/share/omarchy/default/environment.d/10-omarchy-fcitx.conf",
+	"/usr/share/omarchy/environment.d/10-omarchy-fcitx.conf",
+}
+
+// omarchyEnvMaxDepth bounds the fallback search under /usr/share/omarchy. The
+// walk used to be unbounded and ran on every `doctor`; the file only ever lives
+// a few levels down (…/default/environment.d/…).
+const omarchyEnvMaxDepth = 4
+
+// findOmarchyEnvFile reports whether Omarchy's fcitx environment file exists.
+func findOmarchyEnvFile() bool {
+	return findFileBounded(omarchyEnvFileCandidates, "/usr/share/omarchy", "10-omarchy-fcitx.conf", omarchyEnvMaxDepth)
+}
+
+// findFileBounded reports whether name exists at one of the exact candidate
+// paths, or within maxDepth directory levels below root. The depth bound keeps
+// a fallback search from walking a whole source tree.
+func findFileBounded(candidates []string, root, name string, maxDepth int) bool {
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
 	found := false
-	if _, err := os.Stat(omarchyConf); err == nil {
-		found = true
-	} else {
-		_ = filepath.WalkDir("/usr/share/omarchy", func(path string, d os.DirEntry, err error) error {
-			if err == nil && !d.IsDir() && d.Name() == "10-omarchy-fcitx.conf" {
-				found = true
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if d.IsDir() {
+			rel, rerr := filepath.Rel(root, path)
+			if rerr == nil && rel != "." && strings.Count(rel, string(filepath.Separator)) >= maxDepth {
+				return filepath.SkipDir
 			}
 			return nil
-		})
-	}
-	if !found {
+		}
+		if d.Name() == name {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+func checkEnvRedLine() (bool, string) {
+	if !findOmarchyEnvFile() {
 		return false, "未找到 Omarchy 的 10-omarchy-fcitx.conf 环境注入（版本过旧？）"
 	}
 	// environment.d must not set GTK_IM_MODULE

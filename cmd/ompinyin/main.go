@@ -15,6 +15,7 @@ import (
 
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/converge"
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 	"github.com/ProjectAILeap/ompinyin/internal/source"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
 )
@@ -52,6 +53,12 @@ func run(args []string) int {
 	ctx, stopSignals := watchSignals()
 	defer stopSignals()
 	currentCtx = ctx
+	// Bind every exec seam to the run context so a signal also terminates the
+	// children (rime_deployer, systemctl, pacman, sudo, DBus) instead of leaving
+	// them orphaned next to the stop window's deferred restart. Reset on exit so
+	// a later run (tests call run() repeatedly) never inherits a canceled one.
+	execcmd.SetContext(ctx)
+	defer execcmd.SetContext(context.Background())
 
 	if len(args) == 0 {
 		usage()
@@ -154,6 +161,17 @@ func localAssetDir(v string) (string, bool) {
 	return p, true
 }
 
+// rejectArgs turns stray positional arguments into a usage error. Every
+// subcommand validates this: silently ignoring an argument is a CLI contract
+// violation for agents (`ompinyin status foo` used to exit 0).
+func rejectArgs(fs *flag.FlagSet) bool {
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected arguments: %v\n", fs.Args())
+		return true
+	}
+	return false
+}
+
 func cmdInstall(argv []string) int {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	var (
@@ -178,8 +196,7 @@ func cmdInstall(argv []string) int {
 	if err := fs.Parse(argv); err != nil {
 		return converge.ExitUsage
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "unexpected arguments: %v\n", fs.Args())
+	if rejectArgs(fs) {
 		return converge.ExitUsage
 	}
 
@@ -197,6 +214,10 @@ func cmdInstall(argv []string) int {
 	}
 	if (*dspDefault || *noQuanpin) && *dspFlags == "" {
 		fmt.Fprintln(os.Stderr, "--dsp-default / --no-quanpin 必须伴随 --dsp")
+		return converge.ExitUsage
+	}
+	if *dspFlags == "none" && (*dspDefault || *noQuanpin) {
+		fmt.Fprintln(os.Stderr, "--dsp none 与 --dsp-default / --no-quanpin 互斥")
 		return converge.ExitUsage
 	}
 	if *model && (*noModel || *noModelS) {
@@ -268,6 +289,9 @@ func cmdUpdate(argv []string) int {
 	if err := fs.Parse(argv); err != nil {
 		return converge.ExitUsage
 	}
+	if rejectArgs(fs) {
+		return converge.ExitUsage
+	}
 	if *jsonOut && !*dryRun {
 		fmt.Fprintln(os.Stderr, "--json 仅与 --dry-run 连用（输出机器可读计划）")
 		return converge.ExitUsage
@@ -302,8 +326,15 @@ func cmdSwitch(argv []string) int {
 	if err := fs.Parse(argv); err != nil {
 		return converge.ExitUsage
 	}
+	if rejectArgs(fs) {
+		return converge.ExitUsage
+	}
 	if (*dspDefault || *noQuanpin) && *dsp == "" && !*full {
 		fmt.Fprintln(os.Stderr, "--dsp-default / --no-quanpin 必须伴随 --dsp（switch --full 除外）")
+		return converge.ExitUsage
+	}
+	if *dsp == "none" && (*dspDefault || *noQuanpin) {
+		fmt.Fprintln(os.Stderr, "--dsp none 与 --dsp-default / --no-quanpin 互斥")
 		return converge.ExitUsage
 	}
 	if *jsonOut && !*dryRun {
@@ -386,6 +417,9 @@ func cmdStatus(argv []string) int {
 	if err := fs.Parse(argv); err != nil {
 		return converge.ExitUsage
 	}
+	if rejectArgs(fs) {
+		return converge.ExitUsage
+	}
 	opts := newOpts()
 	opts.JSON = *jsonOut
 	return converge.Status(opts)
@@ -395,6 +429,9 @@ func cmdDoctor(argv []string) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
 	if err := fs.Parse(argv); err != nil {
+		return converge.ExitUsage
+	}
+	if rejectArgs(fs) {
 		return converge.ExitUsage
 	}
 	opts := newOpts()
@@ -412,6 +449,9 @@ func cmdClean(argv []string) int {
 	if err := fs.Parse(argv); err != nil {
 		return converge.ExitUsage
 	}
+	if rejectArgs(fs) {
+		return converge.ExitUsage
+	}
 	opts := newOpts()
 	opts.Yes = *yes || *yesS
 	return converge.Clean(converge.CleanArgs{Legacy: *legacy, Yes: *yes || *yesS}, opts)
@@ -424,6 +464,9 @@ func cmdUninstall(argv []string) int {
 		yesS = fs.Bool("y", false, "shorthand for --yes")
 	)
 	if err := fs.Parse(argv); err != nil {
+		return converge.ExitUsage
+	}
+	if rejectArgs(fs) {
 		return converge.ExitUsage
 	}
 	opts := newOpts()
@@ -442,8 +485,7 @@ func cmdSource(argv []string) int {
 	if err := fs.Parse(argv); err != nil {
 		return converge.ExitUsage
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "unexpected arguments: %v\n", fs.Args())
+	if rejectArgs(fs) {
 		return converge.ExitUsage
 	}
 	p, ok := source.ParsePreset(*preset)
@@ -467,7 +509,7 @@ func usage() {
 Usage:
   ompinyin install [--dsp ID|none] [--dsp-default] [--no-quanpin]
 		        [--model | -s|--no-model] [--channel stable|nightly] [--x11-hidpi|--no-x11-hidpi] [-y|--yes] [--dry-run]
-                [--mirror auto|cn|ghproxy|upstream|URL] [-b|--full-backup]
+                [--mirror auto|cn|ghproxy|upstream|URL|目录] [-b|--full-backup]
                 [--os-override omarchy] [--dry-run --json]
   ompinyin update                            # L2 资产刷新到最新并重编译（--dry-run --json 可预览；--self 一并自升级）
   ompinyin switch --dsp ID [--dsp-default]   # 改/加双拼（--mirror/-b 可用，--dry-run --json 可预览）
@@ -481,6 +523,9 @@ Usage:
                 [--dry-run] [-y|--yes]
 
 双拼 ID (` + "`--dsp`" + `): ` + strings.Join(catalog.DoublePinyinIDs(), "|") + `
+
+镜像源 ` + "`--mirror`" + `: 预设 auto|cn|ghproxy|upstream · 镜像 URL · **本地目录**（离线安装：
+目录里放好 rime-ice-full-stable.zip / rime-ice-full-nightly.zip / wanxiang-lts-zh-hans.gram）
 
 退出码: 0 成功 / 1 执行失败 / 2 用法错误 / 3 预检失败
 

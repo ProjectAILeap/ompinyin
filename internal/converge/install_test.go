@@ -38,6 +38,11 @@ var assetsResolveStableTagProd = assets.ResolveStableTag
 // omarchy/fcitx5-remote/rime_deployer).
 var factsLookPathProd = facts.LookPath
 
+// factsOctagramProbeProd preserves the production octagram probe: CI has no
+// librime, and the probe now checks plugin FILES (so Collect would fail the
+// precheck there without this stub).
+var factsOctagramProbeProd = facts.OctagramProbe
+
 // hidpiRunProd preserves the production hyprctl/xrdb runner across tests.
 var hidpiRunProd = hidpi.Run
 
@@ -82,6 +87,8 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 	// fake PATH lookup: every required tool "exists", so the precheck is hermetic
 	// and never depends on the host having omarchy/fcitx5-remote/rime_deployer.
 	facts.LookPath = func(string) (string, error) { return "/usr/bin/omarchy", nil }
+	// octagram probe: CI has no librime; the real probe checks plugin files.
+	facts.OctagramProbe = func() bool { return true }
 
 	// fake fcitx5 user unit: FindUnit/UnitFilePath/ExecStartLine must resolve on
 	// ANY host. CI (ubuntu) has no /usr/lib/systemd/user/omarchy-fcitx5.service,
@@ -223,6 +230,7 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 	t.Cleanup(func() {
 		facts.Run = nil
 		facts.LookPath = factsLookPathProd
+		facts.OctagramProbe = factsOctagramProbeProd
 		facts.OSReleasePath = "/etc/os-release"
 		pkgs.Run = nil
 		service.SystemUnitDirs = []string{"/etc/systemd/user", "/usr/lib/systemd/user"}

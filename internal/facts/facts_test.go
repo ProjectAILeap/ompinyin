@@ -154,3 +154,82 @@ func writeOSRelease(t *testing.T, content string) string {
 	}
 	return p
 }
+
+// TestMain keeps the package hermetic: CI runners have no librime at all, so
+// the default probe must not consult the real filesystem. Tests that exercise
+// the probe override it (or call octagramOnDisk directly).
+func TestMain(m *testing.M) {
+	OctagramProbe = func() bool { return true }
+	os.Exit(m.Run())
+}
+
+// TestOctagramOnDisk: the probe looks at plugin FILES only. "librime is
+// installed" must never imply the plugin is present — that fallback made the
+// precheck's failure branch unreachable.
+func TestOctagramOnDisk(t *testing.T) {
+	origPaths, origGlob := octagramPluginPaths, octagramGlob
+	defer func() { octagramPluginPaths, octagramGlob = origPaths, origGlob }()
+
+	octagramGlob = func() []string { return nil }
+	octagramPluginPaths = nil
+	if octagramOnDisk() {
+		t.Error("no plugin files must report absent")
+	}
+
+	p := filepath.Join(t.TempDir(), "librime-octagram.so")
+	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	octagramPluginPaths = []string{p}
+	if !octagramOnDisk() {
+		t.Error("an existing plugin file must report present")
+	}
+
+	octagramPluginPaths = nil
+	octagramGlob = func() []string { return []string{"/usr/lib/rime-plugins/librime-octagram.so"} }
+	if !octagramOnDisk() {
+		t.Error("the glob fallback must find renamed plugin builds")
+	}
+}
+
+// TestCollectOctagramGate: librime installed but the plugin missing is a hard
+// precheck failure; librime not yet installed is only an L1 warning.
+func TestCollectOctagramGate(t *testing.T) {
+	oldOS, oldProbe := OSReleasePath, OctagramProbe
+	defer func() { OSReleasePath, OctagramProbe = oldOS, oldProbe }()
+	OSReleasePath = writeOSRelease(t, "ID=omarchy\nBUILD_ID=4.0.1\n")
+	Geteuid = func() int { return 1000 }
+	defer func() { Geteuid = os.Geteuid }()
+	LookPath = func(string) (string, error) { return "/usr/bin/x", nil }
+	defer func() { LookPath = defaultLookPath }()
+	defer func() { Run = defaultRun }()
+	OctagramProbe = func() bool { return false }
+
+	// librime installed → the plugin really is missing → failure
+	Run = func(string, ...string) error { return nil }
+	res, err := Collect("", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(res.Failures, "\n"), "octagram") {
+		t.Errorf("missing plugin with librime installed must fail: %v", res.Failures)
+	}
+
+	// librime absent → warning only, L1 installs it
+	Run = func(name string, args ...string) error {
+		if len(args) > 0 && args[0] == "-Qq" {
+			return errors.New("not installed")
+		}
+		return nil
+	}
+	res2, err := Collect("", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(res2.Failures, "\n"), "octagram") {
+		t.Errorf("absent librime must not hard-fail: %v", res2.Failures)
+	}
+	if len(res2.ToolWarnings) == 0 {
+		t.Error("absent librime should surface an L1 warning")
+	}
+}
