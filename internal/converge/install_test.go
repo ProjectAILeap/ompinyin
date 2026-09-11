@@ -1348,3 +1348,205 @@ func TestInstallX11HiDPISkipsWhenCompositorScales(t *testing.T) {
 		t.Errorf("must not publish RESOURCE_MANAGER when the compositor scales X11: %q", h.xrdb)
 	}
 }
+
+// writeLocalRimeIce seeds a --mirror <dir> with the rime-ice archive name. The
+// zip is padded past the 1 MiB shape gate (with a stored entry, so compression
+// cannot shrink it back) so the offline path exercises the same integrity
+// checks as a real download. Callers use Model=false: the 420MB wanxiang gram
+// deliberately fails that size gate in a fixture.
+func writeLocalRimeIce(t *testing.T, dir string) {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range []string{"default.yaml", "rime_ice.schema.yaml"} {
+		f, _ := zw.Create(name)
+		f.Write([]byte("# rime-ice data: " + name + "\n"))
+	}
+	big, _ := zw.CreateHeader(&zip.FileHeader{Name: "pad.bin", Method: zip.Store})
+	big.Write(bytes.Repeat([]byte("x"), 2<<20))
+	zw.Close()
+	for _, name := range []string{"rime-ice-full-stable.zip", "rime-ice-full-nightly.zip"} {
+		if err := os.WriteFile(filepath.Join(dir, name), buf.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestInstallRepairsDisabledDropIn locks invariant 19: a drop-in that EXISTS
+// but still disables notificationitem must be rewritten. The execution path
+// used to gate on file existence while the plan and L5 gated on content, so a
+// stale drop-in was reported as work, then skipped — and no number of installs
+// could repair it.
+func TestInstallRepairsDisabledDropIn(t *testing.T) {
+	home := t.TempDir()
+	setupFakeHost(t, home)
+	seedCache(t, home)
+
+	o1, out1 := newTestOpts()
+	if c := Install(catalog.DefaultDesired(), false, o1); c != ExitOK {
+		t.Fatalf("install: %d\n%s", c, out1)
+	}
+	p := tray.DropInPath(home, "omarchy-fcitx5.service")
+	if err := os.WriteFile(p, []byte("[Service]\nExecStart=/usr/bin/fcitx5 --disable notificationitem\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	o2, out2 := newTestOpts()
+	if c := Install(catalog.DefaultDesired(), false, o2); c != ExitOK {
+		t.Fatalf("install must repair a disabled drop-in, exit=%d\n%s", c, out2)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tray.DropInEnabled(string(b)) {
+		t.Errorf("drop-in not repaired:\n%s", b)
+	}
+}
+
+// TestInstallRestartsStoppedService: "fcitx5 is running" is part of the L4
+// terminal state. A host whose unit was stopped by hand has no other layer's
+// work, so the stop window — the only place service.Start runs — used to stay
+// closed and L5 failed forever.
+func TestInstallRestartsStoppedService(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	seedCache(t, home)
+
+	o1, out1 := newTestOpts()
+	if c := Install(catalog.DefaultDesired(), false, o1); c != ExitOK {
+		t.Fatalf("install: %d\n%s", c, out1)
+	}
+	h.unitActive = false // user stopped fcitx5 (or it crashed)
+
+	o2, out2 := newTestOpts()
+	if c := Install(catalog.DefaultDesired(), false, o2); c != ExitOK {
+		t.Fatalf("install must restart the unit, exit=%d\n%s", c, out2)
+	}
+	if !h.unitActive {
+		t.Error("fcitx5 left STOPPED — user has no input method")
+	}
+}
+
+// TestUpdateRepinsStableTag locks the documented contract that `update` is the
+// entry point which re-pins the stable channel to the newest release. It used
+// to keep serving the previously recorded tag forever.
+func TestUpdateRepinsStableTag(t *testing.T) {
+	home := t.TempDir()
+	setupFakeHost(t, home)
+	local := t.TempDir()
+	writeLocalRimeIce(t, local)
+	assets.ResolveStableTag = func(context.Context) string { return "2026.06.30" }
+
+	o1, out1 := newTestOpts()
+	o1.LocalDir = local
+	o1.MirrorSource = catalog.MirrorChina
+	d0 := catalog.DefaultDesired()
+	d0.Model = false // the fixture gram is not 420MB; this test is about the tag
+	if c := Install(d0, false, o1); c != ExitOK {
+		t.Fatalf("install: %d\n%s", c, out1)
+	}
+	st, err := state.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Assets["rime_ice"].Tag != "2026.06.30" {
+		t.Fatalf("precondition: tag=%q", st.Assets["rime_ice"].Tag)
+	}
+
+	// upstream publishes a newer stable release
+	assets.ResolveStableTag = func(context.Context) string { return "2099.01.01" }
+	o2, out2 := newTestOpts()
+	o2.LocalDir = local
+	o2.MirrorSource = catalog.MirrorChina
+	if c := Update(o2); c != ExitOK {
+		t.Fatalf("update: %d\n%s", c, out2)
+	}
+	st, err = state.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Assets["rime_ice"].Tag != "2099.01.01" {
+		t.Errorf("update did not re-pin the stable tag: got %q\n%s", st.Assets["rime_ice"].Tag, out2)
+	}
+}
+
+// TestChannelSwitchNightlyToStableLedgerCheck locks the hint/sha pairing: the
+// recorded sha256 belongs to the PREVIOUS tag, so it must not be compared
+// under the newly resolved tag. The old code hard-failed an immutable-tag
+// mismatch on a plain channel switch (and on the CN flow where the first
+// install fell back to releases/latest while the API was blocked).
+func TestChannelSwitchNightlyToStableLedgerCheck(t *testing.T) {
+	home := t.TempDir()
+	setupFakeHost(t, home)
+	local := t.TempDir()
+	writeLocalRimeIce(t, local)
+	seedCache(t, home)
+
+	o1, out1 := newTestOpts()
+	o1.LocalDir = local
+	o1.MirrorSource = catalog.MirrorChina
+	d1 := catalog.DefaultDesired()
+	d1.Channel = "nightly"
+	d1.Model = false // the fixture gram is not 420MB
+	if c := Install(d1, false, o1); c != ExitOK {
+		t.Fatalf("nightly install: %d\n%s", c, out1)
+	}
+
+	assets.ResolveStableTag = func(context.Context) string { return "2026.07.15" }
+	o2, out2 := newTestOpts()
+	o2.LocalDir = local
+	o2.MirrorSource = catalog.MirrorChina
+	d2 := catalog.DefaultDesired()
+	d2.Model = false
+	if c := Install(d2, false, o2); c != ExitOK {
+		t.Fatalf("nightly→stable must not trip the immutable-tag check: %d\n%s", c, out2)
+	}
+	st, err := state.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Assets["rime_ice"].Tag != "2026.07.15" {
+		t.Errorf("tag=%q, want 2026.07.15", st.Assets["rime_ice"].Tag)
+	}
+}
+
+// TestUninstallBacksUpBeforeDeleting: the destructive path must snapshot what
+// it deletes. state.json records the Desired the user chose (here an opted-in
+// double pinyin); an uninstall that drops it silently is exactly the loss a
+// reinstall cannot recover.
+func TestUninstallBacksUpBeforeDeleting(t *testing.T) {
+	home := t.TempDir()
+	setupFakeHost(t, home)
+	seedCache(t, home)
+
+	d := catalog.DefaultDesired()
+	d.Extra = []string{"zrm"}
+	opts, out := newTestOpts()
+	if c := Install(d, false, opts); c != ExitOK {
+		t.Fatalf("install exit=%d\n%s", c, out)
+	}
+	if c := Uninstall(opts); c != ExitOK {
+		t.Fatalf("uninstall exit=%d\n%s", c, out)
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(state.Dir(), "backup-*"))
+	if len(matches) == 0 {
+		t.Fatal("uninstall created no backup")
+	}
+	var foundState, foundManaged bool
+	for _, dir := range matches {
+		if _, err := os.Stat(filepath.Join(dir, ".local", "state", "ompinyin", "state.json")); err == nil {
+			foundState = true
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".local", "share", "fcitx5", "rime", "double_pinyin.custom.yaml")); err == nil {
+			foundManaged = true
+		}
+	}
+	if !foundState {
+		t.Error("state.json (the recorded Desired) was not backed up before removal")
+	}
+	if !foundManaged {
+		t.Error("managed files were not backed up before removal")
+	}
+}

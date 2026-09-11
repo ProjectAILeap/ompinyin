@@ -333,16 +333,24 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 	// ---- the single stop window (§6.0) ----
 	// Opened only when there is deploy/config work inside it (P1-1a): an
 	// already-converged host re-runs with zero stop/build/start churn.
-	deployNeeded := len(cur.BuildMissing) > 0 || l3Changed
-	hostNeeded := !cur.ProfileHasRime || !cur.HotkeyOK || !cur.DropInExists
+	//
+	// Every decision here comes from the plan the run just printed (invariant
+	// 13): Install must consume Plan.Need* instead of recomputing the same
+	// question from `cur`. A recomputation can drift from the predicate the user
+	// read (the drop-in check used to look at file EXISTENCE while the plan and
+	// L5 looked at CONTENT, so a stale drop-in was reported as work, then
+	// skipped forever).
+	deployNeeded := p.NeedDeploy
+	hostNeeded := p.NeedHost
+	serviceNeeded := p.NeedService
 	hidpiNeeded := p.NeedHidpi
-	if deployNeeded || hostNeeded || hidpiNeeded {
+	if deployNeeded || hostNeeded || hidpiNeeded || serviceNeeded {
 		if code := runStopWindow(opts, backupDir, cur, d, deployNeeded, hostNeeded, hidpiNeeded); code != ExitOK {
 			return code
 		}
 		saveLedger(opts, st)
 	} else {
-		opts.outf("[跳过] L4 stop 窗口未开启（部署产物 / profile / hotkey / drop-in 均已达成）")
+		opts.outf("[跳过] L4 stop 窗口未开启（部署产物 / profile / hotkey / drop-in 均已达成，服务在运行）")
 	}
 
 	// ---- X11 HiDPI opt-out: withdraw the compat mode ----
@@ -412,7 +420,7 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 	}
 	// rotate backups only after a successful convergence (never delete the
 	// snapshot a failed run might still need)
-	if removed, err := state.PruneBackups(state.LedgerKeepBackups); err != nil {
+	if removed, err := state.PruneBackups(state.LedgerKeepBackups, state.LedgerBackupBudget); err != nil {
 		opts.errf("[警告] 清理旧备份失败：%v", err)
 	} else if len(removed) > 0 {
 		opts.outf("[完成] 已清理 %d 个旧备份（保留最近 %d 个）", len(removed), state.LedgerKeepBackups)
@@ -808,29 +816,41 @@ func fetchAssets(opts Options, ctx context.Context, mgr *assets.Manager, d catal
 		// mirror serves the last stable snapshot — pinning a resolved tag makes
 		// every mirror candidate byte-identical.
 		//
-		// The API is queried only when there is no usable pin. Retrying it on
-		// every run would make a blocked api.github.com (normal in CN) warn on
-		// every invocation (评审 新增#4); `ompinyin update` is the documented way
-		// to re-resolve.
+		// Resolution happens when there is no usable pin (plain install) OR when
+		// this run is `update` (forceRefetch): update is the documented entry
+		// point that re-pins to the newest release, so it must not keep serving
+		// the previously recorded tag forever. A plain install with a pin keeps
+		// it, so a blocked api.github.com (normal in CN) is never retried on
+		// every convergence. When resolution fails on update we keep the
+		// recorded tag (a refresh of the same tag is still useful) instead of
+		// silently falling back to the nightly bytes.
 		tag := prev.Tag
-		if !isStableTag(tag) {
+		if forceRefetch || !isStableTag(tag) {
 			opts.outf("[计划] L2 解析最新 stable release tag…")
 			if resolved := assets.ResolveStableTag(ctx); resolved != "" {
 				tag = resolved
-			} else {
+			} else if !isStableTag(tag) {
 				opts.errf("[提示] L2 无法解析 stable tag（API 不可达？），本次沿用 releases/latest；该 repo 上它指向滚动 nightly，API 可达时跑 ompinyin update 可重新 pin")
 				tag = ""
+			} else {
+				opts.errf("[提示] L2 无法解析新 stable tag（API 不可达？），本次沿用已 pin 的 %s", tag)
 			}
 		}
 		if tag != "" {
 			ri = catalog.RimeIceTagged(tag)
 		}
 	}
-	hintTag := ri.Tag
-	if hintTag == "" {
-		hintTag = prev.Tag
+	// The ledger cross-check is a comparison against the PREVIOUS download, so
+	// the hint tag and hint sha must describe the same tag. Passing the new
+	// ri.Tag together with prev.SHA256 made a tag change (channel switch
+	// nightly→stable, or a fresh pin after a blocked-API fallback) look like a
+	// tampered immutable tag and hard-failed. A different tag has no recorded
+	// checksum to compare against, so no hint is passed.
+	hintTag, hintSHA := prev.Tag, prev.SHA256
+	if ri.Tag != prev.Tag {
+		hintSHA = ""
 	}
-	zipPath, zipSha, zipTag, err := mgr.Fetch(ctx, ri, hintTag, prev.SHA256)
+	zipPath, zipSha, zipTag, err := mgr.Fetch(ctx, ri, hintTag, hintSHA)
 	if err != nil {
 		opts.errf("[失败] L2 %v", err)
 		return ExitExecFail

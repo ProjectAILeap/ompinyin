@@ -10,6 +10,7 @@ import (
 
 	"github.com/ProjectAILeap/ompinyin/internal/assets"
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
+	"github.com/ProjectAILeap/ompinyin/internal/hidpi"
 	"github.com/ProjectAILeap/ompinyin/internal/observe"
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
 	"github.com/ProjectAILeap/ompinyin/internal/plan"
@@ -32,7 +33,6 @@ type SwitchArgs struct {
 	Yes        bool
 	DryRun     bool
 	JSON       bool
-	Stdin      interface{ Read([]byte) (int, error) }
 }
 
 // Switch mutates the persisted desired state (add/remove double pinyin,
@@ -281,7 +281,8 @@ func planReportOf(p *plan.Plan) PlanReport {
 	return PlanReport{
 		Need: map[string]bool{
 			"l1": p.NeedL1, "l2": p.NeedL2, "l3": p.NeedL3,
-			"deploy": p.NeedDeploy, "host": p.NeedHost, "tray": p.NeedTray,
+			"deploy": p.NeedDeploy, "host": p.NeedHost, "service": p.NeedService,
+			"tray":  p.NeedTray,
 			"theme": p.NeedTheme,
 			"hidpi": p.NeedHidpi || p.NeedHidpiUndo,
 		},
@@ -387,12 +388,6 @@ func Doctor(opts Options) int {
 	return ExitOK
 }
 
-// UninstallArgs carries uninstall flags.
-type UninstallArgs struct {
-	Legacy bool // not used; legacy belongs to clean
-	Yes    bool
-}
-
 // RemoveThemeFile removes one theming file following the §5.1 ownership
 // protocol: tool-written files go silently, hand-edited ones ask first.
 func removeThemeFile(opts Options, st *state.State, rel, label string) error {
@@ -416,6 +411,59 @@ func removeThemeFile(opts Options, st *state.State, rel, label string) error {
 	return nil
 }
 
+// backupForUninstall snapshots everything Uninstall is about to delete, so the
+// §5.1 "先备份后写" promise also holds on the destructive path. Without it a
+// plain uninstall silently discarded the managed files AND state.json — the
+// only record of the user's chosen Desired (e.g. an opted-in --dsp) — which is
+// precisely the loss a reinstall cannot recover. Returns "" when nothing the
+// tool owns exists (nothing to lose). A backup failure is fatal: never delete
+// without a snapshot.
+func backupForUninstall(st *state.State) (string, error) {
+	home := state.Home()
+	rimeDir := observe.DataDir()
+	var targets []string
+	for rel := range st.ManagedFiles {
+		if filepath.Base(rel) != rel {
+			continue // non-rime-dir ledger keys are handled explicitly below
+		}
+		targets = append(targets, filepath.Join(rimeDir, rel))
+	}
+	targets = append(targets,
+		theme.ConfPath(home), theme.HookPath(home),
+		tray.DropInPath(home, service.FindUnit(home)),
+		filepath.Join(home, filepath.FromSlash(tray.DropInRelPathLegacy)),
+		tray.ShellJSONPath(home),
+		hidpi.XresourcesPath(home),
+		state.Path(),
+	)
+	for _, u := range hidpiUnits(home) {
+		targets = append(targets, u.path)
+	}
+
+	var existing []string
+	for _, p := range targets {
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			existing = append(existing, p)
+		}
+	}
+	if len(existing) == 0 {
+		return "", nil
+	}
+	dir, err := uniqueBackupDir()
+	if err != nil {
+		return "", err
+	}
+	for _, src := range existing {
+		if err := copyInto(dir, src); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
 // Uninstall removes the managed footprint (§7): managed files deleted (with
 // ownership protocol), profile de-registered, tray restored, dedicated
 // drop-in removed. System packages and the data dir stay.
@@ -431,6 +479,18 @@ func Uninstall(opts Options) int {
 	if err != nil {
 		opts.errf("[失败] 读取状态清单：%v", err)
 		return ExitExecFail
+	}
+
+	// Snapshot before deleting: state.json (the Desired the user chose) and every
+	// owned artifact. §5.1 is a hard promise, and uninstall was the one path
+	// that deleted first and asked nothing.
+	backupDir, err := backupForUninstall(st)
+	if err != nil {
+		opts.errf("[失败] 卸载前备份失败，拒绝删除：%v", err)
+		return ExitExecFail
+	}
+	if backupDir != "" {
+		opts.outf("[完成] 备份：%s", backupDir)
 	}
 
 	rimeDir := observe.DataDir()
@@ -554,6 +614,11 @@ func Uninstall(opts Options) int {
 	if err := state.Remove(); err == nil {
 		opts.outf("[完成] 状态清单已清除")
 	}
+	// rotate backups after a successful uninstall too (never delete the snapshot
+	// this very run just wrote)
+	if _, err := state.PruneBackups(state.LedgerKeepBackups, state.LedgerBackupBudget); err != nil {
+		opts.errf("[警告] 清理旧备份失败：%v", err)
+	}
 	opts.outf("[完成] uninstall 完成；系统包未动，数据目录 %s 保留（手动删除）", rimeDir)
 	return ExitOK
 }
@@ -567,6 +632,16 @@ type CleanArgs struct {
 // Clean removes the download cache and, with --legacy, the historical
 // ~/.config/fcitx/rime duplicate (§6.5, ~450MB).
 func Clean(args CleanArgs, opts Options) int {
+	// Clean deletes the download cache that a concurrent install may be
+	// streaming the 420MB model into; take the same instance lock so the two
+	// never overlap.
+	lock, err := state.Acquire()
+	if err != nil {
+		opts.errf("[失败] %v", err)
+		return ExitExecFail
+	}
+	defer lock.Release()
+
 	cache := assets.CacheDir()
 	if _, err := os.Stat(cache); err == nil {
 		if opts.confirm("清空下载缓存 " + cache + "？") {

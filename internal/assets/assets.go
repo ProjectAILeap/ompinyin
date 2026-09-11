@@ -125,7 +125,15 @@ func (m *Manager) Fetch(ctx context.Context, a catalog.Asset, hintTag, hintSHA s
 			m.logf("[警告] L2 缓存中 %s 的 sha256 与上次记账不符（缓存损坏或 tag 被上游重推）；重新下载", a.Name)
 		default:
 			m.logf("[跳过] L2 %s 缓存命中 (sha256 %s…)", a.Name, trunc12(sha))
-			return cachePath, sha, hintTag, nil
+			// The cache key is per-asset (and per immutable tag); return the
+			// tag the CACHED bytes belong to. hintTag pairs with hintSHA for the
+			// ledger cross-check and can name a different tag after a re-pin, so
+			// it must not leak into the returned record.
+			tag := a.Tag
+			if tag == "" {
+				tag = hintTag
+			}
+			return cachePath, sha, tag, nil
 		}
 	}
 

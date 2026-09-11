@@ -29,14 +29,15 @@ type Step struct {
 type Plan struct {
 	Steps []Step
 
-	NeedL1     bool // pacman work outstanding
-	NeedL2     bool // assets must be fetched/extracted
-	NeedL3     bool // managed files differ from the generated content
-	NeedDeploy bool // rime_deployer --build must run
-	NeedHost   bool // profile / hotkey / drop-in work
-	NeedTray   bool // notificationitem drop-in or the Fcitx pin
-	NeedTheme  bool // candidate-window theming work (§6.6)
-	NeedHidpi  bool // X11 Xft.dpi block / publisher units / published value
+	NeedL1      bool // pacman work outstanding
+	NeedL2      bool // assets must be fetched/extracted
+	NeedL3      bool // managed files differ from the generated content
+	NeedDeploy  bool // rime_deployer --build must run
+	NeedHost    bool // profile / hotkey / drop-in work
+	NeedService bool // the discovered fcitx5 unit is not running
+	NeedTray    bool // notificationitem drop-in or the Fcitx pin
+	NeedTheme   bool // candidate-window theming work (§6.6)
+	NeedHidpi   bool // X11 Xft.dpi block / publisher units / published value
 	// NeedHidpiUndo withdraws a previously opted-in compat mode: the managed
 	// Xresources block or the two publisher units exist, but Desired no longer
 	// opts in. Keeping it separate from NeedHidpi keeps the fcitx5 stop window
@@ -47,7 +48,7 @@ type Plan struct {
 // NeedsApply reports whether any mutating layer has work. L5 is read-only and
 // never counts, so a converged host re-run returns false and skips the backup.
 func (p *Plan) NeedsApply() bool {
-	return p.NeedL1 || p.NeedL2 || p.NeedL3 || p.NeedDeploy || p.NeedHost || p.NeedTray || p.NeedTheme || p.NeedHidpi || p.NeedHidpiUndo
+	return p.NeedL1 || p.NeedL2 || p.NeedL3 || p.NeedDeploy || p.NeedHost || p.NeedService || p.NeedTray || p.NeedTheme || p.NeedHidpi || p.NeedHidpiUndo
 }
 
 // New returns an empty plan.
@@ -122,12 +123,19 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	// old `len(c.Managed) < 3` magic number, 评审 P1-12).
 	var userTouched []string
 	for _, f := range patches.ManagedFiles(d) {
-		if !c.ContentEqual[f.RelPath] {
-			p.NeedL3 = true
-		}
+		// Keep this predicate identical to the write loop in Install: a
+		// user-modified/foreign file is rewritten (after confirmation) even when
+		// its bytes already equal the desired content, so it counts as L3 work
+		// (invariant 13). Without the status term the plan said [跳过] while the
+		// execution still prompted to overwrite.
 		switch c.Managed[f.RelPath] {
 		case patches.StatusUserModified, patches.StatusForeign:
+			p.NeedL3 = true
 			userTouched = append(userTouched, f.RelPath)
+		default:
+			if !c.ContentEqual[f.RelPath] {
+				p.NeedL3 = true
+			}
 		}
 	}
 	if len(c.Orphans) > 0 {
@@ -153,6 +161,11 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	// list / grammar edits), otherwise the new config is never compiled.
 	p.NeedDeploy = len(c.BuildMissing) > 0 || p.NeedL3
 	p.NeedHost = !c.ProfileHasRime || !c.HotkeyOK || !c.DropInOK
+	// "fcitx5 is running" is part of the L4 terminal state (verify checks it,
+	// §6.4 needs the SNI item live). Without this predicate a host whose unit
+	// was stopped by hand could never be repaired: no other layer had work, so
+	// the stop window — the only place service.Start runs — never opened.
+	p.NeedService = c.Unit != "" && !c.ServiceActive
 	p.NeedTray = !c.PinnedHasFc || !c.DropInOK
 	// A zero desired DPI is the legacy/test snapshot meaning that X11 facts
 	// were not collected. Real observe.Collect always supplies at least 96.
@@ -166,9 +179,12 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	// Presence, not content equality: a stale or half-removed unit is still an
 	// owned artifact that must be withdrawn (X11UnitsOK would miss it).
 	p.NeedHidpiUndo = !d.X11HiDPI && (c.X11ManagedPresent || c.X11UnitsPresent)
-	if p.NeedDeploy || p.NeedHost {
+	switch {
+	case p.NeedDeploy || p.NeedHost:
 		p.Add("L4", fmt.Sprintf("stop %s → rime_deployer --build → profile/hotkey/drop-in → start", unitName(c)), true)
-	} else {
+	case p.NeedService:
+		p.Add("L4", fmt.Sprintf("start %s（服务未运行；fcitx5 存活是终态的一部分）", unitName(c)), true)
+	default:
 		p.Add("L4", "部署产物与宿主注册均已达成", false)
 	}
 

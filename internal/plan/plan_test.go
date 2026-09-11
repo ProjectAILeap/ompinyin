@@ -40,18 +40,22 @@ func TestDiffFreshHost(t *testing.T) {
 	}
 }
 
-// TestDiffConvergedHost: when observations match the terminal state, all
-// L1–L4 steps are [跳过].
-func TestDiffConvergedHost(t *testing.T) {
-	d := catalog.DefaultDesired()
+// convergedCurrent is a current-state snapshot that satisfies every layer, so
+// a diff isolates exactly the one field a test perturbs.
+func convergedCurrent() *observe.Current {
 	c := freshCurrent()
 	c.PackagesMissing = nil
 	c.GramFileExists = true
 	c.RimeDataExists = true
-	c.Managed["default.custom.yaml"] = patches.StatusManaged
-	c.Managed["radical_pinyin.custom.yaml"] = patches.StatusManaged
-	c.Managed["melt_eng.custom.yaml"] = patches.StatusManaged
-	c.Managed["rime_ice.custom.yaml"] = patches.StatusManaged
+	c.Managed = map[string]patches.Status{}
+	c.ContentEqual = map[string]bool{}
+	for _, rel := range []string{
+		"default.custom.yaml", "radical_pinyin.custom.yaml",
+		"melt_eng.custom.yaml", "rime_ice.custom.yaml",
+	} {
+		c.Managed[rel] = patches.StatusManaged
+		c.ContentEqual[rel] = true
+	}
 	c.ProfileHasRime = true
 	c.HotkeyOK = true
 	c.DropInExists = true
@@ -63,10 +67,14 @@ func TestDiffConvergedHost(t *testing.T) {
 	c.ThemeConfOK = true
 	c.ThemeHookOK = true
 	c.BuildMissing = nil
-	c.ContentEqual = map[string]bool{}
-	for rel := range c.Managed {
-		c.ContentEqual[rel] = true
-	}
+	return c
+}
+
+// TestDiffConvergedHost: when observations match the terminal state, all
+// L1–L4 steps are [跳过].
+func TestDiffConvergedHost(t *testing.T) {
+	d := catalog.DefaultDesired()
+	c := convergedCurrent()
 
 	p := Diff(d, c, false)
 	for _, s := range p.Steps {
@@ -190,5 +198,46 @@ func TestX11OptionalPlanReportsFacts(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("default X11 diagnosis missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestDiffStoppedServiceIsWork: "fcitx5 is running" is part of the terminal
+// state (verify checks it), so a stopped unit must be planned and counted as
+// work — otherwise install never opens the stop window that starts it.
+func TestDiffStoppedServiceIsWork(t *testing.T) {
+	c := convergedCurrent()
+	c.Unit = "omarchy-fcitx5.service"
+	c.ServiceActive = false
+	p := Diff(catalog.DefaultDesired(), c, false)
+	if !p.NeedService {
+		t.Fatal("a stopped unit must be planned as service work")
+	}
+	if !p.NeedsApply() {
+		t.Fatal("service work must count towards NeedsApply")
+	}
+	if !strings.Contains(p.Describe(), "start omarchy-fcitx5.service") {
+		t.Errorf("plan must render the start step:\n%s", p.Describe())
+	}
+
+	c.ServiceActive = true
+	if q := Diff(catalog.DefaultDesired(), c, false); q.NeedService {
+		t.Error("a running unit must not be planned as work")
+	}
+}
+
+// TestDiffUserModifiedIsL3Work locks invariant 13 for managed files: a
+// user-modified file is rewritten (after confirmation) even when its bytes
+// already match, so it must count as L3 work. The old predicate only looked at
+// ContentEqual, so the plan said [跳过] while execution still prompted.
+func TestDiffUserModifiedIsL3Work(t *testing.T) {
+	c := freshCurrent()
+	c.ContentEqual = map[string]bool{"default.custom.yaml": true}
+	c.Managed["default.custom.yaml"] = patches.StatusUserModified
+	p := Diff(catalog.DefaultDesired(), c, false)
+	if !p.NeedL3 {
+		t.Fatal("a user-modified managed file counts as L3 work (invariant 13)")
+	}
+	if !p.NeedDeploy {
+		t.Error("L3 work must force a rebuild")
 	}
 }

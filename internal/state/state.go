@@ -50,6 +50,11 @@ type State struct {
 // LedgerKeepBackups is how many backup-<ts>/ directories are retained.
 const LedgerKeepBackups = 5
 
+// LedgerBackupBudget caps the TOTAL size of the retained backups. A `-b` full
+// backup can be ~1GB, so the count rule alone could pin ~5GB; the budget drops
+// the oldest snapshots first (the newest one is always kept).
+const LedgerBackupBudget = 4 << 30 // 4 GiB
+
 // New returns an empty ledger.
 func New() *State {
 	return &State{
@@ -209,28 +214,66 @@ func Remove() error {
 	return nil
 }
 
-// PruneBackups keeps only the newest keep backup-<ts>/ directories (names sort
-// chronologically) and returns the removed ones. Backups are taken on every
-// convergence that writes, so without rotation a -b full backup (~1GB) would
-// pile up forever (评审 P2).
-func PruneBackups(keep int) ([]string, error) {
+// PruneBackups keeps the newest `keep` backup-<ts>/ directories, then drops the
+// oldest of those while their total size exceeds maxBytes (0 = no size cap);
+// the newest snapshot is always kept. Backups are taken on every convergence
+// that writes, so without rotation a -b full backup (~1GB) would pile up
+// forever (评审 P2). Names sort chronologically.
+func PruneBackups(keep int, maxBytes int64) ([]string, error) {
 	dir := Dir()
 	if dir == "" || keep <= 0 {
 		return nil, nil
 	}
 	matches, err := filepath.Glob(filepath.Join(dir, "backup-*"))
-	if err != nil || len(matches) <= keep {
+	if err != nil || len(matches) == 0 {
 		return nil, err
 	}
 	sort.Strings(matches) // backup-YYYYMMDD-HHMMSS[-n] sorts chronologically
+
+	cut := len(matches) - keep
+	if cut < 0 {
+		cut = 0
+	}
+	doomed := append([]string{}, matches[:cut]...)
+	survivors := append([]string{}, matches[cut:]...)
+
+	if maxBytes > 0 {
+		total := int64(0)
+		for _, p := range survivors {
+			total += dirSize(p)
+		}
+		for len(survivors) > 1 && total > maxBytes {
+			oldest := survivors[0]
+			total -= dirSize(oldest)
+			doomed = append(doomed, oldest)
+			survivors = survivors[1:]
+		}
+	}
+
 	var removed []string
-	for _, old := range matches[:len(matches)-keep] {
+	for _, old := range doomed {
 		if err := os.RemoveAll(old); err != nil {
 			return removed, err
 		}
 		removed = append(removed, old)
 	}
 	return removed, nil
+}
+
+// dirSize sums the regular-file sizes under path (best-effort; unreadable
+// entries count as zero so rotation never fails because of one bad file).
+func dirSize(path string) int64 {
+	var total int64
+	_ = filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, ierr := d.Info(); ierr == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }
 
 // ---------------------------------------------------------------------------

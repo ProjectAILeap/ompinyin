@@ -152,7 +152,7 @@ func TestPruneBackups(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	removed, err := PruneBackups(3)
+	removed, err := PruneBackups(3, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,6 +168,46 @@ func TestPruneBackups(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(Dir(), n)); err != nil {
 			t.Errorf("newest backup %s was removed: %v", n, err)
 		}
+	}
+}
+
+// TestPruneBackupsSizeBudget: even within the count limit, snapshots are
+// dropped oldest-first once their total exceeds the byte budget (a -b full
+// backup can be ~1GB each). The newest snapshot is always kept.
+func TestPruneBackupsSizeBudget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("OMPINYIN_TEST_HOME", home)
+	names := []string{"backup-20260101-000001", "backup-20260102-000002", "backup-20260103-000003"}
+	payload := make([]byte, 1024)
+	for _, n := range names {
+		dir := filepath.Join(Dir(), n)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "blob"), payload, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// keep all 3 by count, but only ~2.5 KiB fits → drop the oldest one
+	removed, err := PruneBackups(3, 2500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || filepath.Base(removed[0]) != names[0] {
+		t.Fatalf("removed = %v, want [%s]", removed, names[0])
+	}
+
+	// an impossible budget still must not delete the newest snapshot
+	removed, err = PruneBackups(3, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || filepath.Base(removed[0]) != names[1] {
+		t.Fatalf("second pass removed = %v, want [%s]", removed, names[1])
+	}
+	if _, err := os.Stat(filepath.Join(Dir(), names[2])); err != nil {
+		t.Errorf("newest snapshot must always survive: %v", err)
 	}
 }
 
