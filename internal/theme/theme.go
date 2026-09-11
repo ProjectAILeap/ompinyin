@@ -32,7 +32,6 @@ import (
 
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
-	"github.com/ProjectAILeap/ompinyin/internal/patches"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
 )
 
@@ -155,9 +154,6 @@ type Observed struct {
 	DirOK bool
 }
 
-// Equal reports whether the whole theming set needs no convergence work.
-func (o Observed) Equal() bool { return o.ConfEqual && o.HookEqual && o.DirOK }
-
 // Observe probes the theming terminal state (read-only).
 func Observe(home string, st *state.State) Observed {
 	var o Observed
@@ -201,11 +197,6 @@ func Generate(home string) error {
 	}
 	return nil
 }
-
-// ObservedFromClassify re-exports patches.Classify for one theme file so
-// converge can apply the §5.1 ownership protocol without importing patches
-// itself in two places.
-func Classify(abs, ledger string) patches.Status { return patches.Classify(abs, ledger) }
 
 // hookScript is the runtime theme generator shipped by ompinyin. It is the
 // single source of the color-mapping logic (theme.conf keys + SVG art + the

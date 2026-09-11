@@ -63,7 +63,7 @@ func TestObserveTransitions(t *testing.T) {
 	CurrentFont = func() string { return "TestFont" }
 	defer func() { CurrentFont = resetFont }()
 
-	if o := Observe(home, st); o.Equal() {
+	if o := Observe(home, st); o.ConfEqual && o.HookEqual && o.DirOK {
 		t.Error("empty home must not be theme-converged")
 	}
 
@@ -89,7 +89,7 @@ func TestObserveTransitions(t *testing.T) {
 	}
 
 	o := Observe(home, st)
-	if !o.ConfOK || !o.ConfEqual || !o.HookOK || !o.HookEqual || !o.DirOK || !o.Equal() {
+	if !o.ConfOK || !o.ConfEqual || !o.HookOK || !o.HookEqual || !o.DirOK {
 		t.Errorf("converged theming not detected: %+v", o)
 	}
 
@@ -101,10 +101,10 @@ func TestObserveTransitions(t *testing.T) {
 	if o.ConfOK || o.ConfEqual {
 		t.Errorf("edited classicui.conf must read as drifted: %+v", o)
 	}
-	if got := Classify(confAbs, st.ManagedFiles[ConfRelPath]); got != patches.StatusUserModified {
+	if got := patches.Classify(confAbs, st.ManagedFiles[ConfRelPath]); got != patches.StatusUserModified {
 		t.Errorf("edited classicui.conf classified as %v, want user-modified", got)
 	}
-	if got := Classify(HookPath(home), st.ManagedFiles[HookRelPath]); got != patches.StatusManaged {
+	if got := patches.Classify(HookPath(home), st.ManagedFiles[HookRelPath]); got != patches.StatusManaged {
 		t.Errorf("untouched hook classified as %v, want managed", got)
 	}
 }

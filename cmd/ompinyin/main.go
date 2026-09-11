@@ -172,6 +172,17 @@ func rejectArgs(fs *flag.FlagSet) bool {
 	return false
 }
 
+// jsonWithoutDryRun enforces the machine-readable contract (AGENTS.md §JSON):
+// --json only accompanies --dry-run, because stdout must never mix human text
+// and a JSON document. Returns true (and explains on stderr) on violation.
+func jsonWithoutDryRun(jsonOut, dryRun bool) bool {
+	if !jsonOut || dryRun {
+		return false
+	}
+	fmt.Fprintln(os.Stderr, "--json 仅与 --dry-run 连用（输出机器可读计划）")
+	return true
+}
+
 func cmdInstall(argv []string) int {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	var (
@@ -228,11 +239,9 @@ func cmdInstall(argv []string) int {
 		fmt.Fprintln(os.Stderr, "--x11-hidpi 与 --no-x11-hidpi 互斥")
 		return converge.ExitUsage
 	}
-	if *jsonOut && !*dryRun {
-		fmt.Fprintln(os.Stderr, "--json 仅与 --dry-run 连用（输出机器可读计划）")
+	if jsonWithoutDryRun(*jsonOut, *dryRun) {
 		return converge.ExitUsage
 	}
-
 	// Terminal state baseline = the last persisted Desired, NOT the zero-flag
 	// default. §3 says flags OVERRIDE state.json; rebuilding from
 	// DefaultDesired() made a bare `ompinyin install` silently drop a chosen
@@ -292,8 +301,7 @@ func cmdUpdate(argv []string) int {
 	if rejectArgs(fs) {
 		return converge.ExitUsage
 	}
-	if *jsonOut && !*dryRun {
-		fmt.Fprintln(os.Stderr, "--json 仅与 --dry-run 连用（输出机器可读计划）")
+	if jsonWithoutDryRun(*jsonOut, *dryRun) {
 		return converge.ExitUsage
 	}
 	opts := newOpts()
@@ -337,8 +345,7 @@ func cmdSwitch(argv []string) int {
 		fmt.Fprintln(os.Stderr, "--dsp none 与 --dsp-default / --no-quanpin 互斥")
 		return converge.ExitUsage
 	}
-	if *jsonOut && !*dryRun {
-		fmt.Fprintln(os.Stderr, "--json 仅与 --dry-run 连用（输出机器可读计划）")
+	if jsonWithoutDryRun(*jsonOut, *dryRun) {
 		return converge.ExitUsage
 	}
 	opts := newOpts()
@@ -346,12 +353,11 @@ func cmdSwitch(argv []string) int {
 	opts.DryRun = *dryRun
 	opts.JSON = *jsonOut
 	opts.Command = "switch"
+	opts.OSOverride = *osOverride
 	opts.MirrorSource, opts.Mirror, opts.LocalDir = mirrorOpts(*mirror)
 	opts.FullBackup = *fullBackup || *fullBakS
 	return converge.Switch(converge.SwitchArgs{
-		DSP: *dsp, DSPDefault: *dspDefault, NoQuanpin: *noQuanpin,
-		Full: *full, OSOverride: *osOverride, Yes: *yes || *yesS, DryRun: *dryRun,
-		JSON: *jsonOut,
+		DSP: *dsp, DSPDefault: *dspDefault, NoQuanpin: *noQuanpin, Full: *full,
 	}, opts)
 }
 
@@ -390,23 +396,9 @@ func applyInstallFlags(base catalog.Desired, f installFlags, touched map[string]
 	if touched["no-x11-hidpi"] {
 		d.X11HiDPI = false
 	}
-	if !touched["dsp"] {
-		return d
-	}
-	switch {
-	case f.DSP == "none":
-		// symmetric with `switch --dsp none`: back to full pinyin only
-		d.Primary = "quanpin"
-		d.Extra = nil
-	case f.NoQuanpin:
-		d.Primary = f.DSP
-		d.Extra = nil
-	case f.DSPDefault:
-		d.Primary = f.DSP
-		d.Extra = []string{"quanpin"}
-	default:
-		d.Primary = "quanpin"
-		d.Extra = []string{f.DSP}
+	if touched["dsp"] {
+		// same pairing rules as `switch --dsp` (catalog.PairPrimary)
+		d.Primary, d.Extra = catalog.PairPrimary(f.DSP, f.DSPDefault, f.NoQuanpin)
 	}
 	return d
 }

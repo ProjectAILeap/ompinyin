@@ -23,16 +23,13 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/verify"
 )
 
-// SwitchArgs carries the parsed switch flags (§7).
+// SwitchArgs carries the switch-only flags (§7). Run-wide knobs (Yes, DryRun,
+// JSON, OSOverride, mirror…) live in Options.
 type SwitchArgs struct {
 	DSP        string // layout id, or "none"
 	DSPDefault bool
 	NoQuanpin  bool
 	Full       bool
-	OSOverride string
-	Yes        bool
-	DryRun     bool
-	JSON       bool
 }
 
 // Switch mutates the persisted desired state (add/remove double pinyin,
@@ -61,24 +58,9 @@ func Switch(args SwitchArgs, opts Options) int {
 			opts.errf("[失败] --dsp 取值须为双拼 ID：%s（或 none）", strings.Join(catalog.DoublePinyinIDs(), "|"))
 			return ExitUsage
 		}
-		// Mirror install (cmd/ompinyin main.go): keep the Primary/Extra pairing
-		// consistent with the same flags on install, so `switch --dsp X --dsp-default`
-		// keeps quanpin in Extra (rather than dropping it, which used to happen
-		// because d.Extra was wholesale replaced with [X]).
-		switch {
-		case args.NoQuanpin:
-			// --dsp X --no-quanpin: only the dsp layout, quanpin dropped.
-			d.Primary = args.DSP
-			d.Extra = nil
-		case args.DSPDefault:
-			// --dsp X --dsp-default: dsp becomes schema_list[0], quanpin stays in Extra.
-			d.Primary = args.DSP
-			d.Extra = []string{"quanpin"}
-		default:
-			// --dsp X: quanpin stays primary, dsp added as an F4-switchable Extra.
-			d.Primary = "quanpin"
-			d.Extra = []string{args.DSP}
-		}
+		// Same pairing rules as `install --dsp`: pairPrimary is the single source
+		// (keeps `switch --dsp X --dsp-default` putting quanpin in Extra).
+		d.Primary, d.Extra = catalog.PairPrimary(args.DSP, args.DSPDefault, args.NoQuanpin)
 	case args.DSPDefault || args.NoQuanpin:
 		opts.errf("[失败] --dsp-default / --no-quanpin 必须伴随 --dsp")
 		return ExitUsage
@@ -91,10 +73,6 @@ func Switch(args SwitchArgs, opts Options) int {
 		opts.errf("[失败] 终态非法：%v", err)
 		return ExitUsage
 	}
-	opts.OSOverride = args.OSOverride
-	opts.Yes = args.Yes
-	opts.DryRun = args.DryRun
-	opts.JSON = args.JSON
 	return Install(d, false, opts)
 }
 
@@ -335,6 +313,8 @@ func displayTag(tag string) string {
 	return tag
 }
 
+// trunc shortens s for display without panicking on an empty/short value (a
+// failed HashFile returns "").
 func trunc(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -392,7 +372,7 @@ func Doctor(opts Options) int {
 // protocol: tool-written files go silently, hand-edited ones ask first.
 func removeThemeFile(opts Options, st *state.State, rel, label string) error {
 	abs := filepath.Join(state.Home(), filepath.FromSlash(rel))
-	status := theme.Classify(abs, st.ManagedFiles[rel])
+	status := patches.Classify(abs, st.ManagedFiles[rel])
 	if _, err := os.Stat(abs); os.IsNotExist(err) {
 		delete(st.ManagedFiles, rel)
 		return nil
@@ -596,20 +576,15 @@ func Uninstall(opts Options) int {
 	_ = theme.Reload()
 
 	// X11 HiDPI owns only its marked Xresources block and its two dedicated
-	// user units. Never remove a user's other Xresources settings. Disable the
-	// watcher FIRST: it re-publishes on scale edits, and ApplyX11HiDPI is still
-	// live while state.json claims the opt-in. The shared helpers keep this
-	// teardown identical to --no-x11-hidpi.
-	disableHidpiUnits(opts.errf)
-	if err := removeHidpiUnits(""); err != nil {
-		opts.errf("[警告] %v", err)
-	}
-	if removed, err := removeManagedXresources(""); err != nil {
+	// user units. Never remove a user's other Xresources settings. Same helper
+	// as --no-x11-hidpi: watcher disabled BEFORE the file it watches is edited.
+	// Uninstall warns instead of aborting — the rest of the teardown still has
+	// to run.
+	if removed, err := removeHidpiArtifacts("", opts.errf); err != nil {
 		opts.errf("[警告] %v", err)
 	} else if removed {
 		opts.outf("[完成] X11 HiDPI 受管 Xft.dpi 已移除（其余 Xresources 保留）")
 	}
-	_ = service.DaemonReload()
 
 	if err := state.Remove(); err == nil {
 		opts.outf("[完成] 状态清单已清除")

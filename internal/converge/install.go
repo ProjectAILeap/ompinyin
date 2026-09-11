@@ -629,6 +629,28 @@ func disableHidpiUnits(warn func(string, ...any)) {
 	}
 }
 
+// removeHidpiArtifacts withdraws the compat mode's ONLY artifacts: the two
+// publisher units and the managed Xresources block. Shared by --no-x11-hidpi
+// and uninstall so the order (watcher first) cannot drift between them; the
+// caller decides whether a removal error is fatal (opt-out) or a warning
+// (uninstall). removedBlock reports whether the managed Xft.dpi block was there.
+func removeHidpiArtifacts(backupDir string, warn func(string, ...any)) (removedBlock bool, err error) {
+	disableHidpiUnits(warn)
+	if err := removeHidpiUnits(backupDir); err != nil {
+		return false, err
+	}
+	removed, err := removeManagedXresources(backupDir)
+	if err != nil {
+		return false, err
+	}
+	// Best-effort: the unit files are gone and ApplyX11HiDPI is a no-op without
+	// the recorded opt-in, so a stale unit cache cannot re-publish Xft.dpi.
+	if derr := service.DaemonReload(); derr != nil {
+		warn("[警告] daemon-reload：%v", derr)
+	}
+	return removed, nil
+}
+
 // removeHidpiUnits backs up then deletes the two publisher unit files.
 func removeHidpiUnits(backupDir string) error {
 	for _, u := range hidpiUnits(state.Home()) {
@@ -695,21 +717,16 @@ func undoHidpi(opts Options, backupDir string) int {
 		}
 		opts.outf("[完成] 备份：%s", backupDir)
 	}
-	// 1. stop the watcher before changing anything inside it.
-	disableHidpiUnits(opts.errf)
-	// 2. remove only our two units.
-	if err := removeHidpiUnits(backupDir); err != nil {
+	// 1. stop the watcher before changing anything inside it, then remove only
+	// our two units and the managed block (§5.1 line-scoped ownership).
+	removedBlock, err := removeHidpiArtifacts(backupDir, opts.errf)
+	if err != nil {
 		opts.errf("[失败] %v", err)
 		return ExitExecFail
 	}
-	// 3. drop the managed block from ~/.Xresources (line-scoped ownership).
-	if removed, err := removeManagedXresources(backupDir); err != nil {
-		opts.errf("[失败] %v", err)
-		return ExitExecFail
-	} else if removed {
+	if removedBlock {
 		opts.outf("[完成] X11 HiDPI 受管 Xft.dpi 块已移除（其余 Xresources 保留）")
 	}
-	_ = service.DaemonReload()
 	opts.outf("[完成] X11 HiDPI 兼容模式已撤销；当前会话已发布的值保持到注销，下次登录不再发布")
 	return ExitOK
 }
@@ -877,9 +894,9 @@ func fetchAssets(opts Options, ctx context.Context, mgr *assets.Manager, d catal
 		}
 		st.Assets["wanxiang"] = state.AssetRecord{Tag: gramTag, SHA256: gramSha}
 		if placed {
-			opts.outf("[完成] L2 万象 LMDG 模型就位（sha256 %s…）", trunc12(gramSha))
+			opts.outf("[完成] L2 万象 LMDG 模型就位（sha256 %s…）", trunc(gramSha, 12))
 		} else {
-			opts.outf("[跳过] L2 万象 LMDG 模型已是同一 sha256（%s…）", trunc12(gramSha))
+			opts.outf("[跳过] L2 万象 LMDG 模型已是同一 sha256（%s…）", trunc(gramSha, 12))
 		}
 	}
 	return ExitOK
@@ -892,15 +909,6 @@ func saveLedger(opts Options, st *state.State) {
 	if err := st.SaveLedger(); err != nil {
 		opts.errf("[警告] 写状态清单（账本）失败：%v", err)
 	}
-}
-
-// trunc12 shortens a sha256 for display without panicking on an empty/short
-// value (a failed HashFile returns "").
-func trunc12(s string) string {
-	if len(s) <= 12 {
-		return s
-	}
-	return s[:12]
 }
 
 // placeGram copies the cached gram into the rime dir atomically, streaming (the
@@ -941,7 +949,7 @@ func placeGram(cachePath, destPath, sha string) (bool, error) {
 	// integrity of what actually landed: a mismatch means the cache or the copy
 	// is broken, and a corrupt .gram must never be recorded as in place
 	if got := state.HashFile(destPath); sha != "" && got != sha {
-		return false, fmt.Errorf("model checksum mismatch after placement (%s… != %s…)", trunc12(got), trunc12(sha))
+		return false, fmt.Errorf("model checksum mismatch after placement (%s… != %s…)", trunc(got, 12), trunc(sha, 12))
 	}
 	return true, nil
 }
@@ -1103,7 +1111,7 @@ func themeApply(opts Options, backupDir string, st *state.State) int {
 // records the new hash in the ledger (keyed by the home-relative path).
 func writeThemeFile(opts Options, backupDir string, st *state.State, abs, rel, content, label string, mode os.FileMode) (bool, int) {
 	ledger := st.ManagedFiles[rel]
-	status := theme.Classify(abs, ledger)
+	status := patches.Classify(abs, ledger)
 	if b, err := os.ReadFile(abs); err == nil && string(b) == content {
 		return false, ExitOK
 	}
@@ -1214,6 +1222,7 @@ func copyToBackup(backupDir, src string) error {
 	return copyInto(backupDir, src)
 }
 
+// copyInto copies src into the backup dir (see state.CopyFile).
 func copyInto(backupDir, src string) error {
 	rel, err := filepath.Rel(state.Home(), src)
 	if err != nil {
@@ -1237,30 +1246,11 @@ func copyInto(backupDir, src string) error {
 			if d.IsDir() {
 				return os.MkdirAll(dd, 0o755)
 			}
-			return copyFile(path, dd)
+			return copyInto(backupDir, path)
 		})
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	return copyFile(src, dest)
-}
-
-// copyFile streams src to dest (never read the whole file into memory: a -b
-// full backup includes the 420MB model).
-func copyFile(src, dest string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
+	return state.CopyFile(src, dest)
 }

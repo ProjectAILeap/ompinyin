@@ -523,21 +523,21 @@ func TestSwitchDSPKeepsQuanpin(t *testing.T) {
 	}{
 		{
 			name:           "dsp-default keeps quanpin in Extra",
-			args:           SwitchArgs{DSP: "zrm", DSPDefault: true, Yes: true},
+			args:           SwitchArgs{DSP: "zrm", DSPDefault: true},
 			wantPrimary:    "zrm",
 			wantExtra:      []string{"quanpin"},
 			wantSchemaList: []string{"double_pinyin", "rime_ice"},
 		},
 		{
 			name:           "bare dsp keeps quanpin primary",
-			args:           SwitchArgs{DSP: "zrm", Yes: true},
+			args:           SwitchArgs{DSP: "zrm"},
 			wantPrimary:    "quanpin",
 			wantExtra:      []string{"zrm"},
 			wantSchemaList: []string{"rime_ice", "double_pinyin"},
 		},
 		{
 			name:           "dsp no-quanpin drops quanpin",
-			args:           SwitchArgs{DSP: "zrm", NoQuanpin: true, Yes: true},
+			args:           SwitchArgs{DSP: "zrm", NoQuanpin: true},
 			wantPrimary:    "zrm",
 			wantExtra:      nil,
 			wantSchemaList: []string{"double_pinyin"},
@@ -961,8 +961,8 @@ func TestSwitchDryRunJSON(t *testing.T) {
 	home := t.TempDir()
 	setupFakeHost(t, home)
 	var out, errb bytes.Buffer
-	opts := Options{Stdout: &out, Stderr: &errb, Yes: true, Command: "switch"}
-	if c := Switch(SwitchArgs{DSP: "zrm", Yes: true, DryRun: true, JSON: true}, opts); c != ExitOK {
+	opts := Options{Stdout: &out, Stderr: &errb, Yes: true, DryRun: true, JSON: true, Command: "switch"}
+	if c := Switch(SwitchArgs{DSP: "zrm"}, opts); c != ExitOK {
 		t.Fatalf("switch --dry-run --json exit=%d\n%s", c, errb.String())
 	}
 	var rep DryRunReport
