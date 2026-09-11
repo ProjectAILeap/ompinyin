@@ -92,7 +92,9 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 
 	// L1 pkgs
 	missingPkgs := append([]string{}, c.PackagesMissing...)
-	if d.X11HiDPI && c.X11PackageMissing {
+	// xorg-xrdb is only needed when the mode actually publishes (compositor
+	// scaling off). Inert mode must not drag an unrelated package in.
+	if d.X11HiDPI && c.X11ForceZeroScaling && c.X11PackageMissing {
 		missingPkgs = append(missingPkgs, "xorg-xrdb")
 	}
 	p.NeedL1 = len(missingPkgs) > 0
@@ -154,11 +156,16 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	p.NeedTray = !c.PinnedHasFc || !c.DropInOK
 	// A zero desired DPI is the legacy/test snapshot meaning that X11 facts
 	// were not collected. Real observe.Collect always supplies at least 96.
-	p.NeedHidpi = d.X11HiDPI && c.X11DPIDesired > 0 && (!c.X11ConfigOK || !c.X11UnitsOK || (c.X11Available && c.X11DPIActual != c.X11DPIDesired))
+	// force_zero_scaling=false means Hyprland already scales X11 windows
+	// itself, so publishing Xft.dpi would double-scale every X11 client: the
+	// mode is inert there (it is a no-op, not a failure).
+	p.NeedHidpi = d.X11HiDPI && c.X11ForceZeroScaling && c.X11DPIDesired > 0 && (!c.X11ConfigOK || !c.X11UnitsOK || (c.X11Available && c.X11DPIActual != c.X11DPIDesired))
 	// Opt-out is itself convergence work: the mode's artifacts (managed block
 	// and/or publisher units) must be withdrawn, or --no-x11-hidpi would be a
 	// lie and the units would keep re-publishing Xft.dpi on every scale edit.
-	p.NeedHidpiUndo = !d.X11HiDPI && (c.X11ManagedPresent || c.X11UnitsOK)
+	// Presence, not content equality: a stale or half-removed unit is still an
+	// owned artifact that must be withdrawn (X11UnitsOK would miss it).
+	p.NeedHidpiUndo = !d.X11HiDPI && (c.X11ManagedPresent || c.X11UnitsPresent)
 	if p.NeedDeploy || p.NeedHost {
 		p.Add("L4", fmt.Sprintf("stop %s → rime_deployer --build → profile/hotkey/drop-in → start", unitName(c)), true)
 	} else {
@@ -175,14 +182,16 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 		if p.NeedHidpiUndo {
 			p.Add("L4", "X11 HiDPI：撤销 opt-in——移除受管 Xft.dpi 块并禁用/删除缩放监听单元", true)
 		} else {
-			p.Add("L4", "X11 HiDPI 兼容模式未启用（Xft.dpi 是全局 XWayland 资源，默认只诊断；候选框过小时显式 --x11-hidpi）", false)
+			p.Add("L4", x11OptionalNote(c), false)
 		}
+	} else if !c.X11ForceZeroScaling {
+		p.Add("L4", "X11 HiDPI：Hyprland force_zero_scaling=false（合成器已在缩放 X11 窗口），不发布 Xft.dpi（会二次放大）；如需本模式请把 force_zero_scaling 设为 true", false)
 	} else if c.X11DPIDesired == 0 {
 		p.Add("L4", "X11 HiDPI：未采集 X11 事实", false)
 	} else if p.NeedHidpi {
-		p.Add("L4", fmt.Sprintf("X11 HiDPI：收敛 Xft.dpi=%d、发布 xrdb 并安装缩放监听", c.X11DPIDesired), true)
+		p.Add("L4", fmt.Sprintf("X11 HiDPI：收敛 Xft.dpi=%d、发布 xrdb 并安装缩放监听%s", c.X11DPIDesired, x11ForeignNote(c)), true)
 	} else {
-		p.Add("L4", fmt.Sprintf("X11 HiDPI 已发布 Xft.dpi=%d", c.X11DPIDesired), false)
+		p.Add("L4", fmt.Sprintf("X11 HiDPI 已发布 Xft.dpi=%d%s", c.X11DPIDesired, x11ForeignNote(c)), false)
 	}
 
 	// L4 candidate-window theming (§6.6)
@@ -196,6 +205,33 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	// L5 verify (read-only)
 	p.Add("L5", "复核：build 产物 / grammar 编入 / IM 三态 / 托盘可见 / 候选框主题", true)
 	return p
+}
+
+// x11ForeignNote warns when ~/.Xresources assigns Xft.dpi outside ompinyin's
+// managed block. Ownership is line-scoped, so a competing line is never
+// removed; xrdb applies assignments in file order (last wins), which makes the
+// outcome ordering-dependent. Surface it instead of pretending convergence.
+func x11ForeignNote(c *observe.Current) string {
+	if !c.X11ForeignDPI {
+		return ""
+	}
+	return "；注意：~/.Xresources 存在块外 Xft.dpi 行（xrdb 按文件顺序、后者胜）"
+}
+
+// x11OptionalNote renders the read-only X11 HiDPI diagnosis shown when the
+// optional compat mode is off: the focused scale plus expected and currently
+// published DPI. It is the human-readable half of "default = diagnose only"
+// (the machine-readable half lives in status/doctor --json host).
+func x11OptionalNote(c *observe.Current) string {
+	if c.X11DPIDesired == 0 {
+		return "X11 HiDPI 兼容模式未启用（未采集 X11 事实；Xft.dpi 是全局 XWayland 资源，默认只诊断，候选框过小时显式 --x11-hidpi）"
+	}
+	actual := "无 X 会话"
+	if c.X11Available {
+		actual = fmt.Sprintf("%d", c.X11DPIActual)
+	}
+	return fmt.Sprintf("X11 HiDPI 兼容模式未启用（scale=%.2f 期望 Xft.dpi=%d 实际=%s；Xft.dpi 是全局 XWayland 资源，默认只诊断，候选框过小时显式 --x11-hidpi）",
+		c.X11Scale, c.X11DPIDesired, actual)
 }
 
 func modelSuffix(d catalog.Desired) string {

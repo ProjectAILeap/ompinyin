@@ -10,7 +10,6 @@ import (
 
 	"github.com/ProjectAILeap/ompinyin/internal/assets"
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
-	"github.com/ProjectAILeap/ompinyin/internal/hidpi"
 	"github.com/ProjectAILeap/ompinyin/internal/observe"
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
 	"github.com/ProjectAILeap/ompinyin/internal/plan"
@@ -249,27 +248,33 @@ type StepReport struct {
 // HostReport is the observed snapshot, narrowed to what a script may care
 // about (the full observe.Current is an internal shape).
 type HostReport struct {
-	RimeDir         string   `json:"rimeDir"`
-	Unit            string   `json:"unit"`
-	ServiceActive   bool     `json:"serviceActive"`
-	PackagesMissing []string `json:"packagesMissing,omitempty"`
-	RimeDataExists  bool     `json:"rimeDataExists"`
-	GramFileExists  bool     `json:"gramFileExists"`
-	ProfileHasRime  bool     `json:"profileHasRime"`
-	HotkeyOK        bool     `json:"hotkeyOK"`
-	DropInOK        bool     `json:"dropInOK"`
-	PinnedHasFcitx  bool     `json:"pinnedHasFcitx"`
-	ShellRunning    bool     `json:"shellRunning"`
-	ThemeOK         bool     `json:"themeOK"`
-	BuildMissing    []string `json:"buildMissing,omitempty"`
-	OrphanManaged   []string `json:"orphanManaged,omitempty"`
-	LegacyDirExists bool     `json:"legacyDirExists"`
-	X11Scale        float64  `json:"x11Scale"`
-	X11DPIDesired   int      `json:"x11DpiDesired"`
-	X11DPIActual    int      `json:"x11DpiActual"`
-	X11Available    bool     `json:"x11Available"`
-	X11ConfigOK     bool     `json:"x11ConfigOK"`
-	X11UnitsOK      bool     `json:"x11UnitsOK"`
+	RimeDir           string   `json:"rimeDir"`
+	Unit              string   `json:"unit"`
+	ServiceActive     bool     `json:"serviceActive"`
+	PackagesMissing   []string `json:"packagesMissing,omitempty"`
+	RimeDataExists    bool     `json:"rimeDataExists"`
+	GramFileExists    bool     `json:"gramFileExists"`
+	ProfileHasRime    bool     `json:"profileHasRime"`
+	HotkeyOK          bool     `json:"hotkeyOK"`
+	DropInOK          bool     `json:"dropInOK"`
+	PinnedHasFcitx    bool     `json:"pinnedHasFcitx"`
+	ShellRunning      bool     `json:"shellRunning"`
+	ThemeOK           bool     `json:"themeOK"`
+	BuildMissing      []string `json:"buildMissing,omitempty"`
+	OrphanManaged     []string `json:"orphanManaged,omitempty"`
+	LegacyDirExists   bool     `json:"legacyDirExists"`
+	X11Scale          float64  `json:"x11Scale"`
+	X11DPIDesired     int      `json:"x11DpiDesired"`
+	X11DPIActual      int      `json:"x11DpiActual"`
+	X11Available      bool     `json:"x11Available"`
+	X11ConfigOK       bool     `json:"x11ConfigOK"`
+	X11UnitsOK        bool     `json:"x11UnitsOK"`
+	X11UnitsPresent   bool     `json:"x11UnitsPresent"`
+	X11ManagedPresent bool     `json:"x11ManagedPresent"`
+	X11ForeignDPI     bool     `json:"x11ForeignDpi"`
+	X11PackageMissing bool     `json:"x11PackageMissing"`
+	X11ForceZeroScale bool     `json:"x11ForceZeroScaling"`
+	X11ScalingKnown   bool     `json:"x11ScalingKnown"`
 }
 
 func planReportOf(p *plan.Plan) PlanReport {
@@ -305,6 +310,9 @@ func hostReportOf(c *observe.Current) HostReport {
 		OrphanManaged: c.Orphans, LegacyDirExists: c.LegacyDirExists,
 		X11Scale: c.X11Scale, X11DPIDesired: c.X11DPIDesired, X11DPIActual: c.X11DPIActual,
 		X11Available: c.X11Available, X11ConfigOK: c.X11ConfigOK, X11UnitsOK: c.X11UnitsOK,
+		X11UnitsPresent: c.X11UnitsPresent, X11ManagedPresent: c.X11ManagedPresent, X11PackageMissing: c.X11PackageMissing,
+		X11ForeignDPI:     c.X11ForeignDPI,
+		X11ForceZeroScale: c.X11ForceZeroScaling, X11ScalingKnown: c.X11ScalingKnown,
 	}
 }
 
@@ -530,26 +538,16 @@ func Uninstall(opts Options) int {
 	// X11 HiDPI owns only its marked Xresources block and its two dedicated
 	// user units. Never remove a user's other Xresources settings. Disable the
 	// watcher FIRST: it re-publishes on scale edits, and ApplyX11HiDPI is still
-	// live while state.json claims the opt-in.
-	_ = service.Run("systemctl", "--user", "disable", "--now", hidpi.PathName)
-	_ = service.Run("systemctl", "--user", "disable", hidpi.ServiceName)
-	for _, p := range []string{hidpi.ServicePath(state.Home()), hidpi.PathPath(state.Home())} {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			opts.errf("[警告] 删除 X11 HiDPI 单元：%v", err)
-		}
+	// live while state.json claims the opt-in. The shared helpers keep this
+	// teardown identical to --no-x11-hidpi.
+	disableHidpiUnits(opts.errf)
+	if err := removeHidpiUnits(""); err != nil {
+		opts.errf("[警告] %v", err)
 	}
-	xres := hidpi.XresourcesPath(state.Home())
-	if xb, rerr := os.ReadFile(xres); rerr == nil {
-		if remaining, changed, empty := hidpi.RemoveXresources(string(xb)); changed {
-			if empty {
-				if err := os.Remove(xres); err != nil && !os.IsNotExist(err) {
-					opts.errf("[警告] 删除 Xresources：%v", err)
-				}
-			} else if err := state.WriteAtomic(xres, []byte(remaining)); err != nil {
-				opts.errf("[警告] 写 Xresources：%v", err)
-			}
-			opts.outf("[完成] X11 HiDPI 受管 Xft.dpi 已移除（其余 Xresources 保留）")
-		}
+	if removed, err := removeManagedXresources(""); err != nil {
+		opts.errf("[警告] %v", err)
+	} else if removed {
+		opts.outf("[完成] X11 HiDPI 受管 Xft.dpi 已移除（其余 Xresources 保留）")
 	}
 	_ = service.DaemonReload()
 

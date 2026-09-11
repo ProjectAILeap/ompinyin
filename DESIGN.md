@@ -363,9 +363,17 @@ fcitx5 SNI 的 `Id` = **`Fcitx`**（`Tray.qml` 用 `pinnedIds.indexOf(item.id)` 
 
 ### 6.7 可选 X11 HiDPI 兼容模式（ClassicUI 候选框）
 
-XWayland 的 RandR DPI 固定为 96，故 ClassicUI 的 X11 候选框可通过 `xrdb` 的根窗口 `RESOURCE_MANAGER/Xft.dpi` 缩放。但它是**全局 XWayland 资源**：其它 X11/Electron 应用若已由合成器或自身缩放，再读取它可能二次放大。因此**默认只诊断**：`status`/`doctor` 永远读回并展示 X11 事实，但不写文件、不装 `xorg-xrdb`；用户确认旧 X11 应用候选框过小时，才以 `install --x11-hidpi` 明确 opt-in（持久化进 `Desired.X11HiDPI`）。启用时取 `round(96 × scale)`，不写 Hyprland 配置或 `classicui.conf`；`~/.Xresources` 仅管理标记块中的 `Xft.dpi`，保留其余用户内容。混合 DPI 多屏没有正确的自动解：XWayland 和 Xft 都是单个全局值，焦点屏动态切换会影响所有 X11 应用并打断输入，故不做自动随焦点切换；以用户选择启用的固定当前值为兼容取舍。
+XWayland 的 RandR DPI 固定为 96，故 ClassicUI 的 X11 候选框可通过 `xrdb` 的根窗口 `RESOURCE_MANAGER/Xft.dpi` 缩放。但它是**全局 XWayland 资源**：其它 X11/Electron 应用若已由合成器或自身缩放，再读取它可能二次放大。因此**默认只诊断**：`status`/`doctor` 永远读回并展示 X11 事实（scale、期望/实际 `Xft.dpi`、受管块与两个单元的残留），但不写文件、不装 `xorg-xrdb`；用户确认旧 X11 应用候选框过小时，才以 `install --x11-hidpi` 明确 opt-in（持久化进 `Desired.X11HiDPI`）。启用时取 `round(96 × scale)`，不写 Hyprland 配置或 `classicui.conf`；`~/.Xresources` 仅管理标记块中的 `Xft.dpi`，保留其余用户内容。混合 DPI 多屏没有正确的自动解：XWayland 和 Xft 都是单个全局值，焦点屏动态切换会影响所有 X11 应用并打断输入，故不做自动随焦点切换；以用户选择启用的固定当前值为兼容取舍。
 
-撤销用 `install --no-x11-hidpi`：先 `disable --now` path 单元（防监视器变化再发布）→ 删两个 user 单元 → 移除受管块（空则删 `~/.Xresources`）；当前会话已发布的值保留到注销（`xrdb -load` 会清空用户整库，破坏性过大，不做运行时还原）。`ompinyin x11-hidpi-apply`（内部命令，不进 CLI 契约）是登录发布/缩放监听的私有入口：未 opt-in 时 no-op，防残留 enable 链接继续发布全局资源。
+发布单元 `ompinyin-x11-hidpi.service` 以**安装时解析的绝对二进制路径**（`os.Executable()`）为 `ExecStart`，不经 `/usr/bin/env`（systemd user 的 PATH 不含 `~/.local/bin`）；`DISPLAY` 从 graphical session 继承，**不硬编码 `:0`**（Hyprland 的 XWayland 编号不保证）。发布决策在 L1 之后重新探测 X 会话，不复用 L1 前的 `X11Available` 快照（否则首次 opt-in 会跳过发布并在 L5 报「期望≠实际」）。opt-in 意图在收敛开始时就落盘（双向）：本轮即使 L5 失败，下一次裸 `install` 也不会把用户刚选的模式误判成相反意图（opt-in 被拆 / opt-out 被重开）。
+
+撤销用 `install --no-x11-hidpi`：先 `disable --now` path 单元（防监视器变化再发布）→ 删两个 user 单元 → 移除受管块（空则删 `~/.Xresources`）；当前会话已发布的值保留到注销（`xrdb -load` 会清空用户整库，破坏性过大，不做运行时还原）。`ompinyin x11-hidpi-apply`（内部命令，不进 CLI 契约）是登录发布/缩放监听的私有入口：取与 `install` 相同的状态锁（避免第二个 stop 窗口），未 opt-in 时 no-op，防残留 enable 链接继续发布全局资源；重启 fcitx5 失败会把退出码降为失败（同 §6.0 的 stop 窗口守卫）。
+
+**它是全局 X11 缩放权，不是候选框私有开关。** Hyprland 的 `xwayland:force_zero_scaling` 决定 X11 窗口是否由合成器缩放：Omarchy 默认 `true`（`/usr/share/omarchy/default/hypr/envs.lua`）= **不由合成器缩放**，每个 toolkit 各自缩，X11 候选框才需要 `Xft.dpi`；若为 `false`（Hyprland 默认）= 合成器已把 X11 整体放大（像素化但尺寸对），此时发布 `Xft.dpi` 会让候选框与所有 X11 应用一起 4×，故本模式**自动失效**（no-op + 说明，不装包、不落文件、不发布）。fcitx5 侧没有更小的替代杠杆：`PerScreenDPI` 在 XWayland 上被源码强制忽略、`classicui.conf` 只有 Wayland 专用的 `ForceWaylandDPI`，而 `Font` 只放大文字——`XCBWindow::setScale(dpi/96)` 通过 `cairo_surface_set_device_scale` 缩放**整个候选窗口**（背景/边距/高亮/文字一起），所以 Font 不能替代它。
+
+**规则：一个框架只能有一个缩放权，禁止叠加。** `Xft.dpi` 的已知读者：fcitx5 XCBUI（目标）、Qt（`QXcbScreen::logicalDpi()` 直接返回 Xft.dpi；`QT_AUTO_SCREEN_SCALE_FACTOR=1` 时缩 2×，但任何显式 `QT_SCALE_FACTOR` 会再乘一次）、GTK（DPI 设置与 `GDK_SCALE` 可能叠加）、纯 Xft 应用（xterm 等，`Xft.dpi` 正是它们唯一可用的缩放）。启用本模式后必须清掉各 toolkit 的显式缩放因子；否则就是微信那种 4×。
+
+**所有权与冲突（§5 的延伸）：** `~/.Xresources` 是**行级拥有**——ompinyin 只写自己的 marker 块，**绝不删除块外的用户/他人 `Xft.dpi`**。`xrdb -merge` 按文件顺序应用（后者胜），所以若块外 `Xft.dpi` 排在块后，它会赢过 ompinyin → `实际≠期望` → 重发布仍被覆盖 → **L5 明确报错（exit 1）**，不是静默错值。`observe` 把「块外 Xft.dpi」记为 `x11ForeignDpi`，`status`/`doctor`/`--json` 都提示顺序风险。运行中有人直接改根窗口属性：**无实时守护**（path 单元只听 `monitors.lua`），在下次 `install`/`doctor`/登录/缩放变化时纠正。作用域：`Xft.dpi` 是**每个 X 会话**（X display 根窗口属性），不同 OS 用户各自会话/XWayland 互不影响，`~/.Xresources` 也各自 home。
 
 ---
 
@@ -529,3 +537,5 @@ v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 状态清单
 24. 候选框主题：颜色映射唯一来源是 theme-set 钩子脚本（Go 侧不重复）；classicui.conf 与钩子入账、按 §5.1 协议覆盖；生成目录不入账但 uninstall 显式删除；热重载只用 `ReloadAddonConfig`（`fcitx5-remote -r` 不重读 addon 配置）。
 25. X11 HiDPI（§6.7）默认只诊断：`--x11-hidpi` 未显式给出时，收敛绝不写 `~/.Xresources`、不装 `xorg-xrdb`、不装两个 user 单元；`Desired.X11HiDPI` 由且仅由命令行显式 flag 置位。
 26. 已 opt-in 的 X11 HiDPI 是**行级拥有**（marker 块内仅 `Xft.dpi`）；`monitors.lua` 与 Hyprland 配置只读不写；`classicui.conf` 永不写。撤销（`--no-x11-hidpi`）先禁 path 单元再删文件；`ApplyX11HiDPI` 在未 opt-in 时 no-op。
+27. X11 HiDPI（§6.7）以 Hyprland `xwayland:force_zero_scaling` 为前置：为 `false`（合成器已缩放 X11）时本模式恒为 no-op——不写 `~/.Xresources`、不装 `xorg-xrdb`、不发布 `Xft.dpi`，plan/doctor 说明原因。`Xft.dpi` 是全局 X11 缩放权，禁止与显式 toolkit 因子叠加。
+28. `~/.Xresources` 的 `Xft.dpi` 是**行级拥有且不与他人竞争**：ompinyin 绝不删除块外的 `Xft.dpi`；块外存在时把 `x11ForeignDpi` 暴露给 plan/doctor——`xrdb` 后者胜，冲突以 L5 报错收场，不静默覆盖。运行中第三方改根窗口属性无实时守护，下次收敛纠正。

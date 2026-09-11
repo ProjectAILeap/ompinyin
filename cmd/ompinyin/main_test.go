@@ -90,6 +90,16 @@ func TestApplyInstallFlagsKeepsBaseline(t *testing.T) {
 		}
 	})
 
+	t.Run("bare install keeps an opted-in x11 hidpi", func(t *testing.T) {
+		// state.json's recorded intent is the baseline: a bare `install` must
+		// not flip the compat mode off (which would plan a teardown).
+		base := dspBaseline
+		base.X11HiDPI = true
+		if got := applyInstallFlags(base, installFlags{Channel: "stable"}, map[string]bool{}); !got.X11HiDPI {
+			t.Error("bare install silently withdrew an opted-in X11 HiDPI mode")
+		}
+	})
+
 	t.Run("--dsp none clears the extra", func(t *testing.T) {
 		got := applyInstallFlags(dspBaseline, installFlags{DSP: "none"}, map[string]bool{"dsp": true})
 		if got.Primary != "quanpin" || len(got.Extra) != 0 {

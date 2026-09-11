@@ -3,6 +3,7 @@ package verify
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
@@ -174,5 +175,75 @@ func TestDoctorAddsHostChecks(t *testing.T) {
 	}
 	if got := find(t, checks, "触发键"); got.OK {
 		t.Error("wrong trigger keys must be reported")
+	}
+}
+
+// TestX11HiDPIOptionalCheckIsDiagnostic: when the compat mode is off, doctor
+// must stay OK (it is optional) but still report the observed facts instead of
+// a static sentence — that is what "default = diagnose only" promises.
+func TestX11HiDPIOptionalCheckIsDiagnostic(t *testing.T) {
+	d := catalog.DefaultDesired() // X11HiDPI = false
+	c := convergedHost()
+	c.X11Scale = 2
+	c.X11DPIDesired = 192
+	c.X11DPIActual = 96
+	c.X11Available = true
+
+	got := find(t, TerminalState(d, c), "X11 HiDPI（可选）")
+	if !got.OK {
+		t.Fatalf("optional check must not fail a default install: %s", got.Detail)
+	}
+	for _, want := range []string{"scale=2.00", "期望 Xft.dpi=192", "实际=96"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail missing %q: %s", want, got.Detail)
+		}
+	}
+
+	// left-over artifacts are flagged even though the check stays OK
+	c2 := convergedHost()
+	c2.X11DPIDesired = 192
+	c2.X11UnitsPresent = true
+	if got := find(t, TerminalState(d, c2), "X11 HiDPI（可选）"); !strings.Contains(got.Detail, "历史产物") {
+		t.Errorf("residual artifacts must be flagged: %s", got.Detail)
+	}
+}
+
+// TestX11HiDPICompositorScalingIsNotAFailure: when Hyprland scales X11 itself
+// (force_zero_scaling=false) the opt-in is intentionally inert, so doctor must
+// stay OK and say why — never report a missing Xft.dpi as drift.
+func TestX11HiDPICompositorScalingIsNotAFailure(t *testing.T) {
+	d := catalog.DefaultDesired()
+	d.X11HiDPI = true
+	c := convergedHost()
+	c.X11DPIDesired = 192
+	c.X11DPIActual = 0
+	c.X11Available = true
+	c.X11ForceZeroScaling = false
+
+	got := find(t, TerminalState(d, c), "X11 HiDPI")
+	if !got.OK {
+		t.Fatalf("inert mode must not fail L5: %s", got.Detail)
+	}
+	if !strings.Contains(got.Detail, "force_zero_scaling") {
+		t.Errorf("detail must explain the inert mode: %s", got.Detail)
+	}
+}
+
+// TestX11HiDPIForeignAssignmentIsSurfaced: a competing Xft.dpi line outside
+// ompinyin's block is never removed (line-scoped ownership); doctor must point
+// at it so the ordering-dependent outcome is explained.
+func TestX11HiDPIForeignAssignmentIsSurfaced(t *testing.T) {
+	d := catalog.DefaultDesired()
+	d.X11HiDPI = true
+	c := convergedHost()
+	c.X11ForceZeroScaling = true
+	c.X11DPIDesired = 192
+	c.X11DPIActual = 192
+	c.X11Available = true
+	c.X11ForeignDPI = true
+
+	got := find(t, TerminalState(d, c), "X11 HiDPI")
+	if !strings.Contains(got.Detail, "块外 Xft.dpi") {
+		t.Errorf("foreign assignment must be surfaced: %s", got.Detail)
 	}
 }

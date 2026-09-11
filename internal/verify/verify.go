@@ -66,20 +66,54 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 	out = append(out, Check{Name: "托盘 pin", OK: c.PinnedHasFc,
 		Detail: map[bool]string{true: "omarchy.tray.pinned 含 Fcitx", false: "omarchy.tray.pinned 不含 Fcitx"}[c.PinnedHasFc]})
 	if !d.X11HiDPI {
-		out = append(out, Check{Name: "X11 HiDPI（可选）", OK: true,
-			Detail: "未启用：Xft.dpi 是全局 XWayland 资源；仅在确认旧 X11 应用候选框过小时用 install --x11-hidpi 启用。混合 DPI 多屏无法同时精确。"})
+		out = append(out, Check{Name: "X11 HiDPI（可选）", OK: true, Detail: x11OptionalDetail(c)})
+	} else if !c.X11ForceZeroScaling {
+		out = append(out, Check{Name: "X11 HiDPI", OK: true,
+			Detail: "Hyprland force_zero_scaling=false：合成器已在缩放 X11 窗口，无需 Xft.dpi（发布反而会二次放大）"})
 	} else if c.X11Available {
 		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK && c.X11DPIActual == c.X11DPIDesired,
-			Detail: fmt.Sprintf("Xft.dpi 期望=%d 实际=%d（scale=%.2f）", c.X11DPIDesired, c.X11DPIActual, c.X11Scale)})
+			Detail: fmt.Sprintf("Xft.dpi 期望=%d 实际=%d（scale=%.2f）%s", c.X11DPIDesired, c.X11DPIActual, c.X11Scale, x11ForeignNote(c))})
 	} else {
 		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK,
-			Detail: "未检测到 XWayland；已收敛 Xresources 与缩放监听，待 X11 会话发布"})
+			Detail: "未检测到 XWayland；已收敛 Xresources 与缩放监听，待 X11 会话发布" + x11ForeignNote(c)})
 	}
 
 	// 5. candidate-window theming (§6.6)
 	out = append(out, themeCheck(c))
 
 	return out
+}
+
+// x11OptionalDetail is the read-only diagnosis shown when the optional X11
+// HiDPI mode is off. It reports the observed facts (not a static sentence) so
+// `doctor` is really the "default = diagnose only" surface the docs promise,
+// and it flags leftover artifacts that the next `install` will withdraw.
+func x11OptionalDetail(c *observe.Current) string {
+	if c.X11DPIDesired == 0 {
+		return "未启用（未采集 X11 事实）：Xft.dpi 是全局 XWayland 资源，仅在确认旧 X11 应用候选框过小时用 install --x11-hidpi 启用。混合 DPI 多屏无法同时精确。"
+	}
+	residual := ""
+	if c.X11ManagedPresent || c.X11UnitsPresent {
+		residual = "；检测到历史产物，下次 install 将撤销"
+	}
+	if c.X11Available {
+		return fmt.Sprintf("未启用（scale=%.2f 期望 Xft.dpi=%d 实际=%d）%s；Xft.dpi 是全局 XWayland 资源，候选框过小时用 install --x11-hidpi 启用。",
+			c.X11Scale, c.X11DPIDesired, c.X11DPIActual, residual)
+	}
+	return fmt.Sprintf("未启用（scale=%.2f 期望 Xft.dpi=%d；无可用 X 会话）%s；Xft.dpi 是全局 XWayland 资源，候选框过小时用 install --x11-hidpi 启用。",
+		c.X11Scale, c.X11DPIDesired, residual)
+}
+
+// x11ForeignNote warns when ~/.Xresources assigns Xft.dpi outside ompinyin's
+// managed block. ompinyin never removes a competing line, and xrdb applies
+// assignments in file order (last wins), so a competing line after the block
+// defeats convergence — the live-value diff already fails L5 in that case;
+// this note explains why before the user has to read the raw values.
+func x11ForeignNote(c *observe.Current) string {
+	if !c.X11ForeignDPI {
+		return ""
+	}
+	return "；注意：~/.Xresources 存在块外 Xft.dpi 行（xrdb 按文件顺序、后者胜，冲突时以实际值为准）"
 }
 
 // themeCheck reports whether the candidate window follows the Omarchy theme:

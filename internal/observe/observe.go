@@ -96,8 +96,16 @@ type Current struct {
 	X11Available      bool
 	X11ConfigOK       bool
 	X11UnitsOK        bool
+	X11UnitsPresent   bool // either publisher unit file exists (any content)
 	X11ManagedPresent bool // ompinyin-scoped Xft.dpi block exists in ~/.Xresources
+	X11ForeignDPI     bool // a competing Xft.dpi assignment exists outside that block
 	X11PackageMissing bool
+	// X11ForceZeroScaling mirrors Hyprland xwayland:force_zero_scaling. true
+	// (Omarchy default) = X11 windows are NOT compositor-scaled, so each toolkit
+	// scales itself and the X11 candidate needs Xft.dpi. false = the compositor
+	// scales X11, so publishing Xft.dpi would double-scale everything.
+	X11ForceZeroScaling bool
+	X11ScalingKnown     bool // force_zero_scaling was actually read (vs defaulted true)
 }
 
 // Collect probes the host. Best-effort: probe errors are surfaced as
@@ -178,16 +186,35 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 	if actual, err := hidpi.Run("xrdb", "-query"); err == nil {
 		c.X11Available = true
 		c.X11DPIActual, _ = hidpi.ParseXftDPI(actual)
+	} else if prop, perr := hidpi.Run("xprop", "-root", "RESOURCE_MANAGER"); perr == nil {
+		// xorg-xrdb is not always installed (some hosts publish the root
+		// property with xprop). Fall back so "default diagnose only" still
+		// reports the real published value instead of "no X session".
+		c.X11Available = true
+		c.X11DPIActual, _ = hidpi.ParseXftDPIAny(prop)
 	}
 	if merged, _ := hidpi.MergeXresources(string(xr), c.X11DPIDesired); string(xr) == merged {
 		c.X11ConfigOK = true
 	}
 	c.X11ManagedPresent = hidpi.ManagedBlockPresent(string(xr))
-	serviceBody, pathBody := hidpi.UnitContent()
-	if sb, err := os.ReadFile(hidpi.ServicePath(state.Home())); err == nil {
-		if pb, perr := os.ReadFile(hidpi.PathPath(state.Home())); perr == nil {
-			c.X11UnitsOK = string(sb) == serviceBody && string(pb) == pathBody
+	c.X11ForeignDPI = hidpi.HasForeignXftDPI(string(xr))
+	// Hyprland's force_zero_scaling decides whether the compositor already
+	// scales X11 windows. Default to Omarchy's true (apps self-scale → Xft.dpi
+	// needed) when hyprctl is unavailable, so behavior only changes on a host
+	// that explicitly opts into compositor X11 scaling.
+	c.X11ForceZeroScaling = true
+	if b, err := hidpi.Run("hyprctl", "getoption", "xwayland:force_zero_scaling"); err == nil {
+		if v, ok := hidpi.ParseForceZeroScaling(b); ok {
+			c.X11ForceZeroScaling, c.X11ScalingKnown = v, true
 		}
+	}
+	serviceBody, pathBody := hidpi.UnitContent()
+	svcPath, pathPath := hidpi.ServicePath(state.Home()), hidpi.PathPath(state.Home())
+	sb, serr := os.ReadFile(svcPath)
+	pb, perr := os.ReadFile(pathPath)
+	c.X11UnitsPresent = serr == nil || perr == nil
+	if serr == nil && perr == nil {
+		c.X11UnitsOK = string(sb) == serviceBody && string(pb) == pathBody
 	}
 
 	// build artifacts (only meaningful when data dir exists)

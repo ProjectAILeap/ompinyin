@@ -67,28 +67,51 @@ dpi = round(96 × scale)，取整（X 资源只接受整数）
 |---|---|---|
 | 1 | L1 新增包（**仅 opt-in 时**） | `xorg-xrdb`（`xrdb -merge` 发布 RESOURCE_MANAGER；`pkgs.Needed` 不含它，`requiredPackages()` 按 `Desired.X11HiDPI` 追加） |
 | 2 | `~/.Xresources` 受管块 | **只拥有 `Xft.dpi` 一行**（markers `# >>> ompinyin-managed >>>` 包裹），其余用户内容原样保留；幂等：行在且值对 → 无操作（`MergeXresources`） |
-| 3 | 登录自启 hook | systemd user service `ompinyin-x11-hidpi.service`（`WantedBy=graphical-session.target`），`ExecStart=ompinyin x11-hidpi-apply`（内部命令，不进 CLI 契约） |
+| 3 | 登录自启 hook | systemd user service `ompinyin-x11-hidpi.service`（`WantedBy=graphical-session.target`），`ExecStart=<安装时 os.Executable() 的绝对路径> x11-hidpi-apply`（内部命令，不进 CLI 契约）。不用 `/usr/bin/env ompinyin`：systemd user 的 PATH 不含 `~/.local/bin`（README 推荐的安装位置），单元会静默 127。`DISPLAY` 从 graphical session 继承，**不硬编码 `:0`** |
 | 4 | 缩放跟随 | systemd user **path 单元 `ompinyin-x11-hidpi.path` 监听 `~/.config/hypr/monitors.lua`**，变化即 `ompinyin x11-hidpi-apply` 重算重推。显示缩放试用/回退会各触发一次 fcitx5 重启——正在拼写的拼音串会被打断，已写入 README/输出 |
-| 5 | fcitx5 重启策略 | 发布后必须重启（XCBUI 启动时一次性解析）。只在「值确实变了」时重启，避免无意义打断 |
+| 5 | fcitx5 重启策略 | 发布后必须重启（XCBUI 启动时一次性解析）。只在「值确实变了」时重启，避免无意义打断。`writeHidpi` 在 L1 之后**重新探测** X 会话（不复用 L1 前的 `X11Available` 快照）：首次 opt-in 时 `xorg-xrdb` 正是 L1 装的，用旧快照会跳过发布、L5 报「期望≠实际」 |
 | 6 | **撤销（`--no-x11-hidpi`）** | 先 `disable --now` path 单元（防监视器变化再发布），删两个 unit 文件，再移除 `~/.Xresources` 受管块（空则删文件）；已发布到当前会话 RESOURCE_MANAGER 的值保留到注销（`xrdb -load` 会清空整库，破坏性过大，不做）。`ApplyX11HiDPI` 在未 opt-in 时是 no-op，防残留 enable 链接继续发布 |
 
 ### 3.4 `doctor` 检查项（默认也展示，只读）
 
-- 根窗口 `RESOURCE_MANAGER` 是否含 `Xft.dpi` 且 `== round(96×当前scale)`（未 opt-in 时报告「未启用」及风险一句话）；
+- 根窗口 `RESOURCE_MANAGER` 是否含 `Xft.dpi` 且 `== round(96×当前scale)`（未 opt-in 时也报告 scale / 期望 / 实际，并提示残留产物）；
 - 受管块、登录发布单元、path 单元是否存在且内容正确（未 opt-in 时仍读，便于发现残留）；
 - `~/.Xresources` 行级拥有校验：用户内容是否被破坏（只告警、不收敛）。
 
+### 3.5 `force_zero_scaling`：本模式的前置（2026-09-11 实测修正）
+
+`Xft.dpi` 是**全局 X11 缩放权**，不是候选框私有开关。Hyprland 的 `xwayland:force_zero_scaling` 决定 X11 窗口是否已由合成器缩放：
+
+| 值 | X11 窗口 | 本模式 |
+|---|---|---|
+| `true`（Omarchy 默认，`/usr/share/omarchy/default/hypr/envs.lua`） | **不由合成器缩放**，各 toolkit 自己缩 | 需要 `Xft.dpi`（候选框否则小） |
+| `false`（Hyprland 默认） | 合成器整体放大（像素化但尺寸对） | **必须不发布**（否则候选框与所有 X11 应用 4×）→ 自动 no-op |
+
+fcitx5 侧没有更小的替代杠杆：`PerScreenDPI` 在 XWayland 上被源码强制忽略（`XCBUI::scaledDPI` 显式判 `isXWayland`，tooltip 亦写 "always disabled on XWayland"）；`classicui.conf` 只有 Wayland 专用的 `ForceWaylandDPI`；`Font` 只放大文字，而 `XCBWindow::setScale(dpi/96)` 用 `cairo_surface_set_device_scale` 缩放**整个候选窗口**（背景/边距/高亮/文字一起），故 Font 不能替代 `Xft.dpi`。
+
+**规则：一个框架只能有一个缩放权，禁止叠加。** `Xft.dpi` 的已知读者与后果：
+
+| 读者 | 机制 | 叠加后的症状 |
+|---|---|---|
+| fcitx5 XCBUI | `scaledDPI → setScale(dpi/96)` | （目标；正确） |
+| Qt5 XCB | `QXcbScreen::logicalDpi()` 直接返回 Xft.dpi；`QT_AUTO_SCREEN_SCALE_FACTOR=1` 时缩 2× | 任何显式 `QT_SCALE_FACTOR` 再乘 → 4×（微信实例） |
+| GTK | DPI 设置与 `GDK_SCALE` 可能叠加 | 字体二次放大；`GDK_DPI_SCALE` 抵消 |
+| 纯 Xft 应用（xterm 等） | Xft.dpi 是唯一可用缩放 | （正确） |
+
+因此启用本模式后必须清掉各 toolkit 的显式缩放因子。微信的 per-app 消解：`QT_SCREEN_SCALE_FACTORS=2`（显式 screen factor 会**覆盖** DPI 派生因子，源码 `screenSubfactor()` 注释 "factors from QT_SCREEN_SCALE_FACTORS takes precedence over the factor computed from platform plugin DPI"），而不是设 `QT_SCALE_FACTOR`。
+
 ## 4. 与现有分层的衔接
 
-- `facts`/`observe`：新增只读事实 `x11Scale/x11DpiDesired/x11DpiActual/x11Available/x11ConfigOK/x11UnitsOK/x11ManagedPresent`（`observe.Collect` 每次调用都采集——默认只诊断的载体；`status --json` 的 `host` 字段暴露）；
-- `plan`：`NeedHidpi`（opt-in 且未达终态）与 `NeedHidpiUndo`（已 opt-in 过、现在要撤）两个谓词；`--dry-run --json` 的 `need.hidpi` 同时覆盖两者，steps 里有对应揭示行；
-- `converge`：`writeHidpi` 在 stop 窗口内完成（最后一件事是重启 fcitx5 服务，顺序见 AGENTS「关键陷阱」）；`undoHidpi` **在 stop 窗口外**执行——撤销不碰 fcitx5，不许 churn 输入法；`ApplyX11HiDPI` 是 systemd 调用的私有入口；
-- `verify`（L5）：未 opt-in → 恒 OK 的「可选」项 + 风险说明；opt-in → 发布后读回根窗口值比对；
+- `facts`/`observe`：新增只读事实 `x11Scale/x11DpiDesired/x11DpiActual/x11Available/x11ConfigOK/x11UnitsOK/x11UnitsPresent/x11ManagedPresent/x11ForeignDpi/x11PackageMissing/x11ForceZeroScaling/x11ScalingKnown`（`observe.Collect` 每次调用都采集——默认只诊断的载体；`status --dry-run`/`doctor` 的人类输出与 `status/doctor --json` 的 `host` 字段都暴露）；
+- `plan`：`NeedHidpi`（opt-in 且未达终态）与 `NeedHidpiUndo`（产物存在、现在要撤）两个谓词；撤销按**产物存在**（marker 块 ∨ 任一单元文件）而非内容相等，否则过期/残缺单元会永久残留；`--dry-run --json` 的 `need.hidpi` 同时覆盖两者，steps 里有对应揭示行；
+- `converge`：`writeHidpi` 在 stop 窗口内完成（最后一件事是重启 fcitx5 服务，顺序见 AGENTS「关键陷阱」）；模式意图（opt-in/opt-out 双向）在收敛开始时落盘（避免 L5 失败后下一次裸 `install` 按相反意图解释）；`undoHidpi` **在 stop 窗口外**执行——撤销不碰 fcitx5，不许 churn 输入法；`ApplyX11HiDPI` 是 systemd 调用的私有入口，取与 `install` 相同的状态锁（避免并发第二个 stop 窗口），重启失败降级退出码；
+- `verify`（L5）：未 opt-in → 恒 OK 的「可选」项 + 风险说明；`force_zero_scaling=false` → 恒 OK 的「合成器已在缩，无需 Xft.dpi」；opt-in → 发布后读回根窗口值比对；
 - `uninstall`：移除受管块、两个单元、`~/.Xresources` 若因此变空则删文件（`RemoveXresources` 的 `empty` 分支）。
 
 ## 5. 所有权与红线（对应 DESIGN §5/§16）
 
-- `~/.Xresources`：**行级拥有**（仅 marker 块），整文件不归 ompinyin；`RemoveXresources` 保用户内容；
+- `~/.Xresources`：**行级拥有**（仅 marker 块），整文件不归 ompinyin；`RemoveXresources` 保用户内容；**块外的 `Xft.dpi` 不删**——`xrdb -merge` 按文件顺序后者胜，冲突以 `实际≠期望` 在 L5 报错，并记入 `x11ForeignDpi` 让 plan/doctor 提前提示；
+- `Xft.dpi` 的作用域是**每个 X 会话**（X display 根窗口属性），不是每个 app、也不跨 OS 用户；运行中第三方改根属性无实时守护，下次 `install`/doctor/登录/缩放变化时纠正；
 - `monitors.lua`、`hyprland` 配置：只读，永不写入；
 - `classicui.conf`：永不写入（§1 已证无需）；
 - 受管文件形状无变化 → **不递增 `catalog.ManagedFormat`**（AGENTS.md 幂等性说明：只在生成内容形状变化时递增，避免全量 L3 重写）。
@@ -97,12 +120,14 @@ dpi = round(96 × scale)，取整（X 资源只接受整数）
 
 | 风险 | 评估 | 缓解 |
 |---|---|---|
-| `Xft.dpi` 是 X11 全局的，未来装 Electron/QQ 等 X11 应用可能被二次放大 | 中（当前无此类应用；Qt 已证免疫） | **默认不启用**；README 明示；`doctor` 每次展示「未启用」及风险 |
+| `Xft.dpi` 是 X11 全局缩放权；同时设了显式缩放因子的 X11 应用（Qt `QT_SCALE_FACTOR`、GTK）会二次放大——实测微信 4× | 高（不是微信专属，任何 X11/Electron 都可能） | **默认不启用**；§3.5 的「一框架一缩放权、禁止叠加」；per-app 消解用 `QT_SCREEN_SCALE_FACTORS`（覆盖 DPI 派生因子）；`force_zero_scaling=false` 时自动 no-op |
 | 多屏混合 DPI 下单值只能满足聚焦屏 | 低-中（单屏用户为主；Wayland 侧天然按屏） | 取聚焦屏；**不做焦点切换自动改写**（会影响所有 X11 应用并打断输入）；文档写清 |
 | 无 XWayland 的纯 Wayland 会话 | 低 | 探测不到 RESOURCE_MANAGER 时安装仍收敛文件与单元，发布跳过并注记 |
 | fcitx5 重启打断正在输入 | 低 | 仅值变化时重启；输出里提示 |
 | `hyprctl`/`jq` 缺失时的 scale 推导 | 低 | 按 §3.2 逐级降级；XML 解析残留 `grep -o` 是备选 |
 | opt-out 后已发布值残留到注销 | 低 | README/DESIGN 明示；新登录即干净 |
+| 第三者在同一会话改根窗口 `Xft.dpi`，或 `~/.Xresources` 块外有 `Xft.dpi` 行 | 中 | `x11ForeignDpi` 进 plan/doctor；后者胜的顺序冲突以 L5 报错（不静默）；无实时守护，下次收敛纠正；ompinyin 绝不删块外行 |
+| marker 用 `#`：有真 cpp 的发行版上 `xrdb` 会让 cpp 报 `invalid preprocessing directive`（xrdb 不检查其退出码，功能正常，仅 stderr 噪音） | 低 | 无 cpp（如 Arch 无 `/usr/lib/cpp`）时 xrdb 直接把 `#` 行按 cpp 行指令跳过；将来可改 `!` marker 消除噪音 |
 
 ## 7. 落地顺序（已完成）
 
@@ -114,7 +139,7 @@ dpi = round(96 × scale)，取整（X 资源只接受整数）
 ## 8. 测试（对应 DESIGN §9/§15/§16）
 
 - 单测（纯函数，无需假主机）：推导表（§3.2 全映射，重点 1.6→154 的取整）、Xresources 行级合并幂等（已存在/缺失/值错三种输入）、`ManagedBlockPresent`；
-- 假主机测试（`setupFakeHost` fixture 模式，CI）：默认 install 零产物；opt-in 收敛 + 幂等重跑；opt-out 撤销三件套；`ApplyX11HiDPI` 未 opt-in no-op；
+- 假主机测试（`setupFakeHost` fixture 模式，CI）：默认 install 零产物；opt-in 收敛 + 幂等重跑；首轮 opt-in（L1 前 `xrdb` 不可用）仍发布且 L5 通过；L5 失败时 opt-in 意图已落盘；opt-out 撤销三件套（含过期/残缺单元）；`ApplyX11HiDPI` 未 opt-in no-op；
 - 不变量：收敛后复跑 diff 为空；`classicui.conf` mtime/content 不变；
 - 实机 T 级：2.0 缩放三对照（§1）为验收门槛；1.6 小数缩放抽查一次。
 

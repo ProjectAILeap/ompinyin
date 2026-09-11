@@ -205,6 +205,23 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 		return ExitOK
 	}
 
+	// X11 HiDPI is a compatibility opt-in whose artifacts (marker block + two
+	// user units) live outside the rime ownership ledger. Record the accepted
+	// user intent in EITHER direction as soon as it is accepted: a run that
+	// applies the change and then fails a read-only check (L5) must not be
+	// reinterpreted by the next bare `install` as the opposite intent (a failed
+	// opt-in would be torn down; a failed opt-out would be silently re-enabled).
+	// SaveLedger() cannot do this (it deliberately keeps the on-disk Desired),
+	// so persist the flag directly; every other Desired field stays at its last
+	// achieved value until the run completes. Placed AFTER the dry-run guard:
+	// --dry-run must never write state.
+	if d.X11HiDPI != st.Desired.X11HiDPI {
+		st.Desired.X11HiDPI = d.X11HiDPI
+		if err := st.Save(); err != nil {
+			opts.errf("[警告] 记录 X11 HiDPI 模式意图失败：%v", err)
+		}
+	}
+
 	// ---- backup (§8) ----
 	// Only when a mutating layer actually has work: a converged re-run must not
 	// leave a backup dir behind (评审 P0-9 tail).
@@ -219,7 +236,7 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 
 	// ---- L1 pkgs ----
 	if p.NeedL1 {
-		if missing, _ := pkgs.Missing(requiredPackages(d)...); len(missing) > 0 {
+		if missing, _ := pkgs.Missing(requiredPackages(d, cur)...); len(missing) > 0 {
 			opts.outf("[计划] L1 安装系统包：%s", strings.Join(missing, " "))
 			if err := pkgs.Install(missing, opts.Yes); err != nil {
 				opts.errf("[失败] L1 %v", err)
@@ -404,9 +421,9 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 	return ExitOK
 }
 
-func requiredPackages(d catalog.Desired) []string {
+func requiredPackages(d catalog.Desired, cur *observe.Current) []string {
 	out := append([]string{}, pkgs.Needed...)
-	if d.X11HiDPI {
+	if d.X11HiDPI && cur.X11ForceZeroScaling {
 		out = append(out, pkgs.X11HiDPIPackage)
 	}
 	return out
@@ -525,6 +542,14 @@ func runStopWindow(opts Options, backupDir string, cur *observe.Current, d catal
 // never writes monitor configuration or classicui.conf; the latter is a user
 // preference and cannot fix XWayland's fixed RandR DPI anyway.
 func writeHidpi(opts Options, backupDir string, cur *observe.Current) error {
+	// Hyprland scales X11 windows itself when force_zero_scaling=false. In that
+	// regime the candidate window is already scaled by the compositor, so
+	// publishing a global Xft.dpi would double-scale every X11 client
+	// (candidate included). The mode is inert there, not a failure.
+	if !cur.X11ForceZeroScaling {
+		opts.outf("[跳过] L4 X11 HiDPI：Hyprland force_zero_scaling=false（合成器已在缩放 X11 窗口），不发布 Xft.dpi（会二次放大）")
+		return nil
+	}
 	home := state.Home()
 	xres := hidpi.XresourcesPath(home)
 	b, err := os.ReadFile(xres)
@@ -557,8 +582,14 @@ func writeHidpi(opts Options, backupDir string, cur *observe.Current) error {
 			return err
 		}
 	}
-	if !cur.X11Available {
-		opts.outf("[跳过] L4 X11 HiDPI：未检测到 XWayland RESOURCE_MANAGER，已安装登录/缩放监听")
+	// Probe the LIVE X server instead of trusting cur.X11Available: that field
+	// was observed before L1, and on a first opt-in xorg-xrdb is installed by
+	// L1 itself. Reading the stale snapshot skipped the publish and then failed
+	// L5 ("期望=192 实际=0") — the first opt-in needed a second run.
+	// An unreachable X session is a legitimate no-op (pure Wayland), so probe
+	// first and only treat a merge failure as fatal when the server IS there.
+	if _, qerr := hidpi.Run("xrdb", "-query"); qerr != nil {
+		opts.outf("[跳过] L4 X11 HiDPI：未检测到可用的 X 会话（无 XWayland 或 DISPLAY 不可达）；已安装登录/缩放监听，下次登录发布")
 		return nil
 	}
 	if _, err := hidpi.Run("xrdb", "-merge", xres); err != nil {
@@ -566,6 +597,73 @@ func writeHidpi(opts Options, backupDir string, cur *observe.Current) error {
 	}
 	opts.outf("[完成] L4 X11 HiDPI：已发布 Xft.dpi=%d（fcitx5 将在本 stop 窗口后重启）", cur.X11DPIDesired)
 	return nil
+}
+
+// hidpiUnits lists ompinyin's two publisher units. Order matters: the path
+// unit triggers the service, so it is disabled first.
+func hidpiUnits(home string) []struct{ unit, path, kind string } {
+	return []struct{ unit, path, kind string }{
+		{hidpi.PathName, hidpi.PathPath(home), "缩放监听单元"},
+		{hidpi.ServiceName, hidpi.ServicePath(home), "登录发布单元"},
+	}
+}
+
+// disableHidpiUnits stops and disables the publisher units. Failures are
+// reported but never abort: the files are removed next and ApplyX11HiDPI is a
+// no-op once Desired is off, so a stranded watcher cannot re-publish a global
+// resource. Not swallowing the error is still required — the previous `_ =`
+// made "先禁单元再删块，消除竞态" a claim the code could not back.
+func disableHidpiUnits(warn func(string, ...any)) {
+	for _, u := range hidpiUnits(state.Home()) {
+		if err := service.Run("systemctl", "--user", "disable", "--now", u.unit); err != nil {
+			warn("[警告] 停用 %s 失败：%v（仍会删除文件；未 opt-in 时 apply 是 no-op，不会重新发布）", u.kind, err)
+		}
+	}
+}
+
+// removeHidpiUnits backs up then deletes the two publisher unit files.
+func removeHidpiUnits(backupDir string) error {
+	for _, u := range hidpiUnits(state.Home()) {
+		if _, err := os.Stat(u.path); os.IsNotExist(err) {
+			continue
+		}
+		if err := copyToBackup(backupDir, u.path); err != nil {
+			return fmt.Errorf("备份 %s 失败，拒绝删除：%w", u.kind, err)
+		}
+		if err := os.Remove(u.path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("删除 %s：%w", u.kind, err)
+		}
+	}
+	return nil
+}
+
+// removeManagedXresources drops the managed Xft.dpi block from ~/.Xresources,
+// deleting the file when nothing user-owned remains. removed reports whether a
+// block was present. Shared by undoHidpi and Uninstall so the ownership rules
+// cannot drift between the two teardown paths.
+func removeManagedXresources(backupDir string) (removed bool, err error) {
+	xres := hidpi.XresourcesPath(state.Home())
+	xb, rerr := os.ReadFile(xres)
+	if rerr != nil {
+		return false, nil // absent or unreadable: leave it alone
+	}
+	remaining, changed, empty := hidpi.RemoveXresources(string(xb))
+	if !changed {
+		return false, nil
+	}
+	if err := copyToBackup(backupDir, xres); err != nil {
+		return false, fmt.Errorf("备份 Xresources 失败，拒绝修改：%w", err)
+	}
+	if empty {
+		if err := os.Remove(xres); err != nil && !os.IsNotExist(err) {
+			return true, fmt.Errorf("删除 Xresources：%w", err)
+		}
+		return true, nil
+	}
+	if err := state.WriteAtomic(xres, []byte(remaining)); err != nil {
+		return true, fmt.Errorf("写 Xresources：%w", err)
+	}
+	return true, nil
 }
 
 // undoHidpi withdraws an opted-in compat mode. Order matters: the path unit
@@ -589,44 +687,19 @@ func undoHidpi(opts Options, backupDir string) int {
 		}
 		opts.outf("[完成] 备份：%s", backupDir)
 	}
-	home := state.Home()
 	// 1. stop the watcher before changing anything inside it.
-	_ = service.Run("systemctl", "--user", "disable", "--now", hidpi.PathName)
-	_ = service.Run("systemctl", "--user", "disable", hidpi.ServiceName)
+	disableHidpiUnits(opts.errf)
 	// 2. remove only our two units.
-	units := []struct{ path, kind string }{{hidpi.ServicePath(home), "服务单元"}, {hidpi.PathPath(home), "监听单元"}}
-	for _, u := range units {
-		if _, rerr := os.Stat(u.path); os.IsNotExist(rerr) {
-			continue
-		}
-		if err := copyToBackup(backupDir, u.path); err != nil {
-			opts.errf("[失败] 备份 %s 失败，拒绝删除：%v", u.kind, err)
-			return ExitExecFail
-		}
-		if err := os.Remove(u.path); err != nil && !os.IsNotExist(err) {
-			opts.errf("[失败] 删除 %s：%v", u.kind, err)
-			return ExitExecFail
-		}
+	if err := removeHidpiUnits(backupDir); err != nil {
+		opts.errf("[失败] %v", err)
+		return ExitExecFail
 	}
 	// 3. drop the managed block from ~/.Xresources (line-scoped ownership).
-	xres := hidpi.XresourcesPath(home)
-	if xb, rerr := os.ReadFile(xres); rerr == nil {
-		if remaining, changed, empty := hidpi.RemoveXresources(string(xb)); changed {
-			if err := copyToBackup(backupDir, xres); err != nil {
-				opts.errf("[失败] 备份 Xresources 失败，拒绝修改：%v", err)
-				return ExitExecFail
-			}
-			if empty {
-				if err := os.Remove(xres); err != nil && !os.IsNotExist(err) {
-					opts.errf("[失败] 删除 Xresources：%v", err)
-					return ExitExecFail
-				}
-			} else if err := state.WriteAtomic(xres, []byte(remaining)); err != nil {
-				opts.errf("[失败] 写 Xresources：%v", err)
-				return ExitExecFail
-			}
-			opts.outf("[完成] X11 HiDPI 受管 Xft.dpi 块已移除（其余 Xresources 保留）")
-		}
+	if removed, err := removeManagedXresources(backupDir); err != nil {
+		opts.errf("[失败] %v", err)
+		return ExitExecFail
+	} else if removed {
+		opts.outf("[完成] X11 HiDPI 受管 Xft.dpi 块已移除（其余 Xresources 保留）")
 	}
 	_ = service.DaemonReload()
 	opts.outf("[完成] X11 HiDPI 兼容模式已撤销；当前会话已发布的值保持到注销，下次登录不再发布")
@@ -639,7 +712,18 @@ func undoHidpi(opts Options, backupDir string) int {
 // no-op unless the mode is recorded as opted-in: the units are only installed
 // by the opt-in path, but a stale enable link (or a manual re-enable) must not
 // start publishing a global resource behind the user's back.
-func ApplyX11HiDPI(opts Options) int {
+func ApplyX11HiDPI(opts Options) (code int) {
+	// The path unit can fire while `ompinyin install` is mid-run. Taking the
+	// same lock prevents two concurrent fcitx5 stop windows (AGENTS 关键陷阱 #1:
+	// one stop window, always). Contention is not an error for a background
+	// hook — skip and let the next scale change / login retry.
+	lock, err := state.Acquire()
+	if err != nil {
+		opts.errf("[跳过] X11 HiDPI：%v（另一 ompinyin 实例在运行；下次缩放变化或登录会重试）", err)
+		return ExitOK
+	}
+	defer lock.Release()
+
 	st, err := state.Load()
 	if err != nil {
 		opts.errf("[失败] 读取状态清单：%v", err)
@@ -654,6 +738,10 @@ func ApplyX11HiDPI(opts Options) int {
 		return ExitOK
 	}
 	cur := observe.Collect(d, st)
+	if !cur.X11ForceZeroScaling {
+		opts.outf("[跳过] X11 HiDPI：Hyprland force_zero_scaling=false（合成器已在缩放 X11 窗口），不发布 Xft.dpi")
+		return ExitOK
+	}
 	if err := writeHidpi(opts, "", cur); err != nil {
 		opts.errf("[失败] X11 HiDPI：%v", err)
 		return ExitExecFail
@@ -681,12 +769,18 @@ func ApplyX11HiDPI(opts Options) int {
 		opts.errf("[失败] %v", err)
 		return ExitExecFail
 	}
+	// Mirror the runStopWindow guard: a failed restart means no input method,
+	// so it must downgrade the exit code and say how to recover (评审 P0-4).
 	defer func() {
 		if err := service.Start(unit); err != nil {
-			opts.errf("[失败] 重启 %s：%v", unit, err)
+			opts.errf("[失败] 重启 %s：%v（请立即手动 `systemctl --user start %s`，否则无输入法可用）", unit, err, unit)
+			if code == ExitOK {
+				code = ExitExecFail
+			}
+			return
 		}
+		opts.outf("[完成] X11 HiDPI：Xft.dpi 已变化，已重启 %s", unit)
 	}()
-	opts.outf("[完成] X11 HiDPI：Xft.dpi 已变化，已重启 %s", unit)
 	return ExitOK
 }
 
@@ -1041,6 +1135,16 @@ func obackup(opts Options, d catalog.Desired, cur *observe.Current, st *state.St
 		for _, f := range []string{observe.ProfilePath(), observe.ConfigPath(), tray.ShellJSONPath(state.Home()), cur.DropInPath, theme.ConfPath(state.Home()), theme.HookPath(state.Home())} {
 			if _, err := os.Stat(f); err == nil {
 				targets = append(targets, f)
+			}
+		}
+		// X11 HiDPI artifacts live outside the rime ledger; snapshot them too
+		// (§5.1) so the opt-in / opt-out paths always have a pre-change copy even
+		// when no other target exists on the host.
+		if d.X11HiDPI || p.NeedHidpiUndo {
+			for _, f := range []string{hidpi.XresourcesPath(state.Home()), hidpi.ServicePath(state.Home()), hidpi.PathPath(state.Home())} {
+				if _, err := os.Stat(f); err == nil {
+					targets = append(targets, f)
+				}
 			}
 		}
 	}

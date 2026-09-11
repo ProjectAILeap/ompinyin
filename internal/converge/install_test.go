@@ -61,6 +61,7 @@ type fakeHost struct {
 	buildRuns   int
 	themeReload int
 	xrdb        []byte // RESOURCE_MANAGER state served by fake `xrdb -query`
+	forceZero   bool   // Hyprland xwayland:force_zero_scaling (Omarchy default true)
 }
 
 func setupFakeHost(t *testing.T, home string) *fakeHost {
@@ -72,7 +73,7 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 	os.WriteFile(osRel, []byte("ID=omarchy\nBUILD_ID=4.0.1\n"), 0o644)
 	facts.OSReleasePath = osRel
 
-	h := &fakeHost{}
+	h := &fakeHost{forceZero: true}
 
 	// fake pacman: everything installed
 	facts.Run = func(name string, args ...string) error { return nil }
@@ -123,8 +124,11 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 
 	// fake hyprctl + xrdb: focused monitor scale=2 (→ Xft.dpi 192); `xrdb -query`
 	// echoes the last merged file, so the published-value diff is observable.
+	// Omarchy ships xwayland force_zero_scaling=true (X11 apps self-scale).
 	hidpi.Run = func(name string, args ...string) ([]byte, error) {
 		switch {
+		case name == "hyprctl" && len(args) >= 1 && args[0] == "getoption":
+			return []byte(fmt.Sprintf("bool: %v\nset: true\n", h.forceZero)), nil
 		case name == "hyprctl":
 			return []byte(`[{"focused":true,"scale":2}]`), nil
 		case name == "xrdb" && len(args) >= 1 && args[0] == "-query":
@@ -1126,6 +1130,9 @@ func TestInstallX11HiDPIOptInConvergesAndOptOutUndoes(t *testing.T) {
 	if !bytes.Contains(h.xrdb, []byte("Xft.dpi: 192")) {
 		t.Errorf("published RESOURCE_MANAGER missing Xft.dpi: %q", h.xrdb)
 	}
+	if st, err := state.Load(); err != nil || !st.Desired.X11HiDPI {
+		t.Errorf("opt-in must be recorded in state.json (err=%v)", err)
+	}
 
 	// re-run must converge to a no-op (idempotent, one managed block)
 	opts2, out2 := newTestOpts()
@@ -1150,6 +1157,9 @@ func TestInstallX11HiDPIOptInConvergesAndOptOutUndoes(t *testing.T) {
 		if _, err := os.Stat(p); err == nil {
 			t.Errorf("unit %s still present after opt-out", p)
 		}
+	}
+	if st, err := state.Load(); err != nil || st.Desired.X11HiDPI {
+		t.Errorf("opt-out must clear the recorded mode (err=%v)", err)
 	}
 }
 
@@ -1177,5 +1187,164 @@ func TestApplyX11HiDPINoOpWithoutOptIn(t *testing.T) {
 	}
 	if len(h.xrdb) != 0 {
 		t.Errorf("ApplyX11HiDPI must not publish RESOURCE_MANAGER when not opted in: %q", h.xrdb)
+	}
+}
+
+// TestInstallX11HiDPIFirstOptInPublishesWhenXrdbAppearsMidRun: on a host where
+// xorg-xrdb is missing at observe time, L1 installs it and the publish must not
+// be gated on the stale X11Available=false snapshot. That snapshot made the very
+// first `install --x11-hidpi` skip the publish and then fail L5 with
+// "期望=192 实际=0", needing a second run.
+func TestInstallX11HiDPIFirstOptInPublishesWhenXrdbAppearsMidRun(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	seedCache(t, home)
+
+	// Only the first `xrdb -query` (the pre-L1 observe) fails, as if the binary
+	// were installed by L1; everything afterwards succeeds.
+	queries := 0
+	hidpi.Run = func(name string, args ...string) ([]byte, error) {
+		switch {
+		case name == "hyprctl":
+			return []byte(`[{"focused":true,"scale":2}]`), nil
+		case name == "xrdb" && len(args) >= 1 && args[0] == "-query":
+			queries++
+			if queries == 1 {
+				return nil, errors.New("xrdb: command not found")
+			}
+			return h.xrdb, nil
+		case name == "xrdb" && len(args) == 2 && args[0] == "-merge":
+			if b, err := os.ReadFile(args[1]); err == nil {
+				h.xrdb = b
+			}
+			return nil, nil
+		}
+		return nil, nil
+	}
+
+	opts, out := newTestOpts()
+	d := catalog.DefaultDesired()
+	d.X11HiDPI = true
+	if code := Install(d, false, opts); code != ExitOK {
+		t.Fatalf("first opt-in exit=%d (must publish, not fail L5)\noutput:\n%s", code, out.String())
+	}
+	if !bytes.Contains(h.xrdb, []byte("Xft.dpi: 192")) {
+		t.Errorf("first opt-in must publish Xft.dpi=192, got %q", h.xrdb)
+	}
+}
+
+// TestInstallX11HiDPIRecordsIntentBeforeL5: when the opt-in applies its
+// artifacts but a later read-only check (L5) fails, the intent must already be
+// on disk. Otherwise the next bare `install` (whose baseline is state.json)
+// would read X11HiDPI=false and silently withdraw what the user asked for.
+func TestInstallX11HiDPIRecordsIntentBeforeL5(t *testing.T) {
+	home := t.TempDir()
+	setupFakeHost(t, home)
+	seedCache(t, home)
+
+	// `xrdb -merge` is a no-op and `-query` never reports Xft.dpi, so L5 must
+	// detect 期望=192 / 实际=0 and fail — while the block + units are on disk.
+	hidpi.Run = func(name string, args ...string) ([]byte, error) {
+		if name == "hyprctl" {
+			return []byte(`[{"focused":true,"scale":2}]`), nil
+		}
+		return []byte{}, nil
+	}
+
+	opts, out := newTestOpts()
+	d := catalog.DefaultDesired()
+	d.X11HiDPI = true
+	if code := Install(d, false, opts); code == ExitOK {
+		t.Fatalf("expected L5 to fail with the broken fake\noutput:\n%s", out.String())
+	}
+	st, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if !st.Desired.X11HiDPI {
+		t.Fatal("opt-in intent must be persisted before L5 so the next bare install does not tear it down")
+	}
+	b, err := os.ReadFile(hidpi.XresourcesPath(home))
+	if err != nil || !hidpi.ManagedBlockPresent(string(b)) {
+		t.Fatalf("artifacts must remain after the failed run (err=%v)", err)
+	}
+}
+
+// TestInstallWithdrawsStaleHidpiUnits: a leftover unit from an older build (or
+// a half-removed one) has no matching managed block and stale content. The undo
+// predicate is presence-based, so it must still be withdrawn.
+func TestInstallWithdrawsStaleHidpiUnits(t *testing.T) {
+	home := t.TempDir()
+	setupFakeHost(t, home)
+	seedCache(t, home)
+
+	if err := os.MkdirAll(hidpi.UnitDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hidpi.PathPath(home), []byte("[Unit]\nDescription=old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, out := newTestOpts()
+	if code := Install(catalog.DefaultDesired(), false, opts); code != ExitOK {
+		t.Fatalf("install exit=%d\noutput:\n%s", code, out.String())
+	}
+	if _, err := os.Stat(hidpi.PathPath(home)); err == nil {
+		t.Error("a stale publisher unit must be withdrawn on a default install")
+	}
+}
+
+// TestInstallX11HiDPIDryRunDoesNotPersistIntent guards the ordering: intent is
+// recorded after the dry-run guard, so `--dry-run` remains side-effect free.
+func TestInstallX11HiDPIDryRunDoesNotPersistIntent(t *testing.T) {
+	home := t.TempDir()
+	setupFakeHost(t, home)
+	seedCache(t, home)
+
+	opts, out := newTestOpts()
+	opts.DryRun = true
+	d := catalog.DefaultDesired()
+	d.X11HiDPI = true
+	if code := Install(d, false, opts); code != ExitOK {
+		t.Fatalf("dry-run exit=%d\n%s", code, out.String())
+	}
+	st, err := state.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Desired.X11HiDPI {
+		t.Error("--dry-run must not persist the opt-in intent")
+	}
+	if _, err := os.Stat(hidpi.XresourcesPath(home)); err == nil {
+		t.Error("--dry-run must not write ~/.Xresources")
+	}
+}
+
+// TestInstallX11HiDPISkipsWhenCompositorScales: with
+// xwayland:force_zero_scaling=false Hyprland scales X11 windows itself, so an
+// opt-in must stay inert — no block, no units, no global Xft.dpi (which would
+// double-scale every X11 client).
+func TestInstallX11HiDPISkipsWhenCompositorScales(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	h.forceZero = false
+	seedCache(t, home)
+
+	opts, out := newTestOpts()
+	d := catalog.DefaultDesired()
+	d.X11HiDPI = true
+	if code := Install(d, false, opts); code != ExitOK {
+		t.Fatalf("install exit=%d\noutput:\n%s", code, out.String())
+	}
+	if _, err := os.Stat(hidpi.XresourcesPath(home)); err == nil {
+		t.Error("must not write ~/.Xresources when the compositor scales X11")
+	}
+	for _, p := range []string{hidpi.ServicePath(home), hidpi.PathPath(home)} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("must not install %s when the compositor scales X11", p)
+		}
+	}
+	if len(h.xrdb) != 0 {
+		t.Errorf("must not publish RESOURCE_MANAGER when the compositor scales X11: %q", h.xrdb)
 	}
 }

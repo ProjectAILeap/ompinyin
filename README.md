@@ -117,7 +117,7 @@ ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
 - **手改受管文件会被覆盖**：由工具生成的文件请写独立的非受管补丁，别手改。
 - **Foot终端全屏输入时可能出现候选框不可见**：Hyprland 渲染器问题，本工具范围外（桌面窗口正常）。
 - **候选框主题依赖当前 Omarchy 主题颜色**（`~/.local/state/omarchy/current/theme/colors.toml`）：它不存在时（极少见）候选框保持 fcitx5 默认外观，`ompinyin doctor` 会提示「候选框主题」未达标。
-- **X11 HiDPI 是显式 opt-in 的兼容模式，不是默认项**：`--x11-hidpi` 写入**全局** XWayland `Xft.dpi`。它可修复微信等旧 X11 输入上下文的 fcitx5 候选框过小，但其它读取该资源的 X11/Electron 应用可能已被合成器或自身缩放，再被放大一次——这是对整桌面的全局副作用，所以默认只读诊断：`doctor`/`status` 每次都展示 X11 缩放与 Xft.dpi 现状而不改任何文件，先用 `doctor` 确认候选框过小，再只在已验证的应用上 `install --x11-hidpi` 启用。**混合 DPI 多屏没有可靠的单值解**：XWayland 与 `Xft.dpi` 都是全局的，不能同时精确适配每块屏，也不会随焦点屏自动切换（来回改值会影响所有 X11 应用并打断输入）。用 `install --no-x11-hidpi` 撤销（移除受管块与监听单元；当前会话已发布的值保持到注销）。
+- **X11 HiDPI 是显式 opt-in 的兼容模式，不是默认项**：`--x11-hidpi` 写入**全局** XWayland `Xft.dpi`。它可修复微信等旧 X11 输入上下文的 fcitx5 候选框过小，但其它读取该资源的 X11/Electron 应用可能已被合成器或自身缩放，再被放大一次——这是对整桌面的全局副作用，所以默认只读诊断：`doctor`/`status` 每次都展示 X11 缩放与 Xft.dpi 现状而不改任何文件，先用 `doctor` 确认候选框过小，再只在已验证的应用上 `install --x11-hidpi` 启用。**混合 DPI 多屏没有可靠的单值解**：XWayland 与 `Xft.dpi` 都是全局的，不能同时精确适配每块屏，也不会随焦点屏自动切换（来回改值会影响所有 X11 应用并打断输入）。用 `install --no-x11-hidpi` 撤销（移除受管块与监听单元；当前会话已发布的值保持到注销）。**一个框架只能有一个缩放权**：`Xft.dpi` 是全局的，凡把 Xft.dpi 当逻辑 DPI 的 X11 客户端（Qt 显式 `QT_SCALE_FACTOR`、GTK、Electron）都会二次放大——启用后必须清掉各 toolkit 的显式缩放因子（微信的 per-app 消解用 `QT_SCREEN_SCALE_FACTORS=2`，它会覆盖 DPI 派生因子，而不是叠加）。另外，若 Hyprland 设了 `xwayland:force_zero_scaling=false`（合成器已缩放 X11），本模式会自动变为 no-op（发布会 4×）——Omarchy 默认为 `true`（X11 各 toolkit 自己缩），正是本模式的适用前提。
 
 ## 关键路径
 
