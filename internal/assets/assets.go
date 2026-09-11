@@ -389,7 +389,7 @@ func (m *Manager) download(ctx context.Context, url, partPath, srcPath string) (
 	}
 	// sha256 校验失败则中止、不落半截 .gram：完整性由 Fetch 的 verifyShape +
 	// 记账比对把关，坏字节不会被 rename 进缓存。
-	return TagFromURL(resp.Request.URL), nil
+	return tagFromURL(resp.Request.URL), nil
 }
 
 var (
@@ -400,8 +400,8 @@ var (
 	tagFromGithubReleaseMirror = regexp.MustCompile(`/github-release/[^/]+/[^/]+/([^/]+)/`)
 )
 
-// TagFromURL extracts the release tag from a resolved (post-redirect) URL.
-func TagFromURL(u *url.URL) string {
+// tagFromURL extracts the release tag from a resolved (post-redirect) URL.
+func tagFromURL(u *url.URL) string {
 	if u == nil {
 		return ""
 	}

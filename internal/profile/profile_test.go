@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"sort"
 	"strings"
 	"testing"
 )
@@ -51,7 +52,7 @@ func TestEnsureRimeMissing(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	if names := ItemNames(out); len(names) != 2 || names[0] != "keyboard-us" || names[1] != "rime" {
+	if names := itemNames(out); len(names) != 2 || names[0] != "keyboard-us" || names[1] != "rime" {
 		t.Errorf("items = %v", names)
 	}
 	// GroupOrder rendered last
@@ -81,7 +82,7 @@ Layout=
 	if !changed {
 		t.Fatal("must change")
 	}
-	if names := ItemNames(out); len(names) != 2 || names[1] != "rime" {
+	if names := itemNames(out); len(names) != 2 || names[1] != "rime" {
 		t.Fatalf("items = %v", names)
 	}
 	if !strings.Contains(out, "DefaultIM=rime") {
@@ -118,7 +119,7 @@ Layout=
 	if !changed {
 		t.Fatal("must change DefaultIM")
 	}
-	if names := ItemNames(out); len(names) != 2 {
+	if names := itemNames(out); len(names) != 2 {
 		t.Errorf("must not duplicate the rime item: %v", names)
 	}
 	if !strings.Contains(out, "DefaultIM=rime") {
@@ -141,7 +142,7 @@ func TestRemoveRime(t *testing.T) {
 	if strings.Contains(out, "DefaultIM=rime") {
 		t.Errorf("DefaultIM still rime:\n%s", out)
 	}
-	if names := ItemNames(out); len(names) != 1 || names[0] != "keyboard-us" {
+	if names := itemNames(out); len(names) != 1 || names[0] != "keyboard-us" {
 		t.Errorf("items = %v", names)
 	}
 	// idempotent
@@ -181,7 +182,7 @@ Layout=
 	if gi < lastItem {
 		t.Errorf("GroupOrder must be rendered last:\n%s", out)
 	}
-	if names := ItemNames(out); len(names) != 2 || names[1] != "rime" {
+	if names := itemNames(out); len(names) != 2 || names[1] != "rime" {
 		t.Errorf("items = %v", names)
 	}
 }
@@ -244,7 +245,7 @@ Layout=
 	if !strings.Contains(out, "[Groups/0/Items/0]") || !strings.Contains(out, "[Groups/0/Items/1]") {
 		t.Errorf("items must be contiguous 0 and 1:\n%s", out)
 	}
-	if names := ItemNames(out); len(names) != 2 || names[0] != "keyboard-us" || names[1] != "rime" {
+	if names := itemNames(out); len(names) != 2 || names[0] != "keyboard-us" || names[1] != "rime" {
 		t.Errorf("items = %v (numeric order expected)", names)
 	}
 }
@@ -274,4 +275,23 @@ Layout=
 	if changed {
 		t.Errorf("tolerant read should recognize the ok state:\n%s", out)
 	}
+}
+
+// itemNames is the test-side reader for the registered IM names in Groups/0
+// order. It lives here, not in the package: production never needs it.
+func itemNames(content string) []string {
+	var names []string
+	var items []*Section
+	for _, s := range Parse(content) {
+		if strings.HasPrefix(s.Name, itemPrefix) {
+			items = append(items, s)
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool { return itemIndex(items[i]) < itemIndex(items[j]) })
+	for _, s := range items {
+		if n, ok := s.Get("Name"); ok {
+			names = append(names, n)
+		}
+	}
+	return names
 }

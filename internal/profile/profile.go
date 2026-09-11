@@ -280,21 +280,3 @@ func itemIndex(s *Section) int {
 	}
 	return n
 }
-
-// ItemNames returns the IM names registered in Groups/0 in order.
-func ItemNames(content string) []string {
-	var names []string
-	items := []*Section{}
-	for _, s := range Parse(content) {
-		if strings.HasPrefix(s.Name, itemPrefix) {
-			items = append(items, s)
-		}
-	}
-	sort.SliceStable(items, func(i, j int) bool { return itemIndex(items[i]) < itemIndex(items[j]) })
-	for _, s := range items {
-		if n, ok := s.Get("Name"); ok {
-			names = append(names, n)
-		}
-	}
-	return names
-}

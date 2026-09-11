@@ -204,8 +204,8 @@ func TestTagFromURL(t *testing.T) {
 		"/some/other/path": "",
 	}
 	for path, want := range cases {
-		if got := TagFromURL(mustURL("https://github.com" + path)); got != want {
-			t.Errorf("TagFromURL(%s) = %q, want %q", path, got, want)
+		if got := tagFromURL(mustURL("https://github.com" + path)); got != want {
+			t.Errorf("tagFromURL(%s) = %q, want %q", path, got, want)
 		}
 	}
 }
