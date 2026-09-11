@@ -455,6 +455,8 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 | 真机验收 | 见 §15 T0–T4 金字塔 |
 | CI | gofmt / go vet / **golangci-lint**（`.golangci.yaml`：默认集 errcheck+govet+ineffassign+staticcheck+unused，加 gofmt formatter） / `go test -race` / build 冒烟 + `ompinyin version`；绝不在 CI 跑系统操作、绝不触网（tag 解析可注入 stub，本地资产目录可离线跑） |
 
+- **T0 的结构性盲区（评审教训）**：fixture 把 `$TMPDIR`、systemd、D-Bus、信号时序全部归一化，所以「真实主机交互」类缺陷——跨文件系统 `rename`、游离 fcitx5、`Restart=always` 抖动、SIGINT 落在 stop 窗口——在 T0 里**不可能复现**。这不是覆盖率能补的洞。两条出路都要用：① §15 T4 的 `make smoke`；② 在那类 seam 上**主动造出异常环境**（先例：`selfup` 的 EXDEV 回归用 `t.Setenv("TMPDIR", <另一挂载点>)` 复现，见 `TestApplyAcrossFilesystems`——它跑在前一版代码上会失败）。
+
 ---
 
 ## 10. 工程化与发布
@@ -517,7 +519,9 @@ v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 候选框主
 | T1 Distrobox Arch 容器 | `distrobox create --image archlinux:latest` | L1–L3 全真实；**需 `--os-override`** | 分钟级 |
 | T2 systemd-nspawn（按需） | pacstrap rootfs + `systemd-nspawn -bD` | L4 服务层：stop→写→start；drop-in 真生效 | 中 |
 | T3 QEMU/KVM 全新 Omarchy | 官方 ISO + qcow2 backing-file 基线快照 | 端到端：Wayland/Hyprland、IM 三态、herdr、F4、**顶栏图标可见** | 小时级 |
-| T4 真机幂等回归（零成本） | 已安装宿主 | ① 重跑全 `[跳过]`；② `--dsp zrm` 后两个 build schema 都有 grammar；③ 顶栏有图标；④ 备份可回滚 | 零 |
+| T4 真机幂等回归（零成本） | 已安装宿主 | ① 重跑全 `[跳过]`；② 游离实例自愈（`install` 清掉占着 `org.fcitx.Fcitx5` 的非单元实例并真正接管）；③ `update --self` **跨文件系统**替换 + `releases/latest` sha256；④ `--dsp zrm` 后两个 build schema 都有 grammar；⑤ 顶栏有图标；⑥ 备份可回滚；⑦ SIGINT 落在 stop 窗口后 fcitx5 仍被拉起 | 零 |
+
+- **T4 不是一段文档，是 `make smoke`**（`scripts/t4-smoke.sh`，~100s）：跑 ① ② ③ + `doctor`；④⑤⑥⑦ 仍手动（把信号时序脚本化会变成 flaky 测试，比没有更坏）。它**必须跑在真机**并会短暂重启 fcitx5，所以**打 tag 前跑**。这一层存在的唯一理由就是 §9 说的 T0 结构性盲区：`TestApplyUpgrades` 一直「覆盖」着自升级替换路径，只是把 exe 和暂存目录都放在同一个 `$TMPDIR` 下，恰好是 `rename(2)` 唯一合法的拓扑，于是 v1.2.1–v1.2.2 的 `update --self` 对所有人都坏。
 
 - T3：`qemu-img create -b <clean>.qcow2` 基线快照，每轮副本，装坏即弃；T4 前置为 git checkpoint / 备份 `$RIME` 与 `shell.json`。
 - **T1/T2（非 Omarchy 容器）**：预检需 `--os-override`（绕过 `ID=arch`）**且**在 PATH 放一个 `omarchy` 替身——`omarchy` 不是 pacman 包，缺了预检直接失败（§7）；`fcitx5-remote`/`rime_deployer` 由 L1 安装（预检只告警）。
@@ -557,3 +561,4 @@ v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 候选框主
 28. `~/.Xresources` 的 `Xft.dpi` 是**行级拥有且不与他人竞争**：ompinyin 绝不删除块外的 `Xft.dpi`；块外存在时把 `x11ForeignDpi` 暴露给 plan/doctor——`xrdb` 后者胜，冲突以 L5 报错收场，不静默覆盖。运行中第三方改根窗口属性无实时守护，下次收敛纠正。
 29. 启动服务前先清掉占着 `org.fcitx.Fcitx5` 的游离实例，且**仅当单元未激活时**清（`Start` 是幂等关窗调用，不得误杀健康实例）；清完必须确认它已让出总线名再 start。存活性探测只走进程探针（`pgrep`），**绝不用 `fcitx5-remote`/总线调用**——服务停止时那会 D-Bus 激活一个新的游离实例，正是本故障的成因。
 30. L5 的「服务在跑」判定不得只看 `systemctl --user is-active` 的快照：`Restart=always` 下濒死实例会让它读到几百毫秒的 `active`。单元自称激活却存在**多于一个** fcitx5 进程（`FcitxCount > 1`）即与游离实例抖动共存，L5 必须失败——`install` 绝不能报「终态收敛完成」而 `doctor` 立刻报两项不达标。
+31. 自升级替换文件必须**落进目标目录再 rename**（copy → 同目录 rename），**绝不**从暂存目录直接 `rename(2)` 到二进制：暂存用 `$TMPDIR`（Omarchy 上是 tmpfs），二进制在 `$HOME`/`/usr/local/bin`（btrfs/root fs），跨挂载 rename 返回 `EXDEV`。替换后必须仍是 `0755`（`CopyFile` 写 0644），失败不得在二进制旁留 `.*.new`。

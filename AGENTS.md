@@ -30,6 +30,7 @@ make build   # go build -ldflags "-X …/internal/catalog.Version=$(git describe
 make test    # go test -race ./...
 make lint    # golangci-lint run --timeout 5m ./...   (配置：.golangci.yaml)
 make fmt     # gofmt -w .
+make smoke   # T4 真机预检（幂等 / 游离实例自愈 / doctor / update --self 跨文件系统）——打 tag 前在自己的真机跑，~100s，会短暂重启 fcitx5
 make release-check  # goreleaser check .goreleaser.yaml
 ```
 
@@ -77,6 +78,8 @@ L1 软件包（fcitx5-rime/configtool/fcitx5-gtk）→ L2 资源（下载、sha2
 
 6. **服务停止时绝不用 `fcitx5-remote`/总线探测存活。** `org.fcitx.Fcitx5` 是唯一总线名：任何 D-Bus 调用都会把游离 fcitx5 激活出来占住它 → 单元自己 spawn 的实例**启动即退出 0** → `Restart=always` 拖成 start-limit-hit 死循环，而 `Type=simple` 的 `systemctl start` 仍返回 0（**假成功**：主机没有可用输入法，L5 还可能因瞬时 `active` 窗口打勾）。存活探测只用 `pgrep`（`service.FcitxRunning` / `FcitxCount`）；`startUnit` 在单元未激活时先清游离实例、等它让出总线名再 start。细节：DESIGN §6.3 / §16.29–30。
 
+7. **打 tag 前必须在自己真机上跑 `make smoke`。** T0 在**结构上**看不见真实主机：fixture 把 `$TMPDIR`、systemd、会话总线、信号时序全归一化了，所以宿主交互类缺陷（跨文件系统 `update --self`、游离 fcitx5、SIGINT 落在 stop 窗口）在这里不可能复现——不是覆盖率问题，加测也没用。先例：`TestApplyUpgrades` 一直“覆盖”着自升级替换路径，只是把 exe 和暂存目录都放在同一个 `$TMPDIR` 下，恰好是 `rename(2)` 唯一合法的拓扑，于是 v1.2.1–v1.2.2 的 `update --self` 对所有人都坏。新 seam 上的异常环境要**造出来**（例：`t.Setenv("TMPDIR", <另一挂载点>)`），不能指望 fixture 自己撞上。见 DESIGN §9 / §15。
+
 两层切换（别混淆）：**fcitx5 IM**（`keyboard-us` ↔ `rime`，触发键 `Alt+Space`——选它为了避开 Omarchy herdr 的 Ctrl+Space 前缀）vs **Rime schema**（`rime_ice`/`double_pinyin`…，**F4**）。
 
 ---
@@ -105,7 +108,7 @@ CI（**绝不**跑系统操作、**绝不**碰网络）：gofmt → `go vet` →
 ## Git 工作流
 
 - **提交风格**：Conventional Commits（`fix:` · `feat:` · `docs:` · `refactor:` · `chore:` · `test:`）；一次提交只做一个逻辑变更；包级改动加作用域（`fix(L1): …`）。goreleaser 的 changelog 会排除 `docs`/`chore`/`test`/`refactor`（**含作用域形式**，如 `test(assets):`）—— 用户可见的改动必须走 `feat`/`fix`，别把真改动藏进这四个前缀；反过来，纯内部改动（重构、测试、文档）就应当用它们，别让用户看到无关条目（v1.2.0 的 notes 曾混进 5 条 refactor + 2 条 scoped test）。
-- **发布**：在 `main` 上打 `v*` tag → goreleaser 构建（`.goreleaser.yaml`）。changelog 由 git log 生成 → 提交正文写成人能读的。生成内容形状变化应走 `catalog.ManagedFormat`，而不是一个无说明的版本号跳跃。
+- **发布**：在 `main` 上打 `v*` tag → goreleaser 构建（`.goreleaser.yaml`）。**打 tag 前先在自己的真机跑 `make smoke`**（真机 T4，见「关键陷阱」7），然后 `git push origin main && git tag -a vX.Y.Z && git push origin vX.Y.Z`。changelog 由 git log 生成 → 提交正文写成人能读的。生成内容形状变化应走 `catalog.ManagedFormat`，而不是一个无说明的版本号跳跃。
 - **绝不提交**：`bin/`、`dist/`、生成的 rime 产物、机器本地路径、密钥（见 `.gitignore`）。
 - **CI 纪律**：workflow 里不加网络、不加系统操作（T0 假实现 + `--mirror <dir>`）。
 
