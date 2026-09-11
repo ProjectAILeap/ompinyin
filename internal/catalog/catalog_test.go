@@ -168,20 +168,54 @@ func TestRimeIceTagged(t *testing.T) {
 	}
 }
 
-func TestMirrorSource(t *testing.T) {
-	for _, s := range []MirrorSource{MirrorAuto, MirrorChina, MirrorGhproxy, MirrorUpstream} {
-		if !s.Valid() {
-			t.Errorf("%s should be valid", s)
+func TestPairPrimary(t *testing.T) {
+	cases := []struct {
+		dsp         string
+		dspDefault  bool
+		noQuanpin   bool
+		wantPrimary string
+		wantExtra   []string
+	}{
+		{"none", false, false, "quanpin", nil},
+		{"zrm", false, false, "quanpin", []string{"zrm"}},
+		{"zrm", true, false, "zrm", []string{"quanpin"}},
+		{"zrm", false, true, "zrm", nil},
+	}
+	for _, c := range cases {
+		primary, extra := PairPrimary(c.dsp, c.dspDefault, c.noQuanpin)
+		d := Desired{Primary: primary, Extra: extra, Channel: "stable"}
+		if err := d.Validate(); err != nil {
+			t.Errorf("PairPrimary(%q,%v,%v) produced an invalid Desired: %v", c.dsp, c.dspDefault, c.noQuanpin, err)
+		}
+		if primary != c.wantPrimary || len(extra) != len(c.wantExtra) {
+			t.Errorf("PairPrimary(%q,%v,%v) = (%q,%v), want (%q,%v)",
+				c.dsp, c.dspDefault, c.noQuanpin, primary, extra, c.wantPrimary, c.wantExtra)
 		}
 	}
-	if (MirrorSource("bogus")).Valid() {
-		t.Error("bogus mirror source accepted")
+
+	// A live-empty --dsp (`--dsp "$VAR"`, VAR unset) must NOT read as "full
+	// pinyin only": that would silently drop a configured double pinyin and
+	// change the terminal state (§16-16). It stays invalid so the CLI exits 2.
+	primary, extra := PairPrimary("", false, false)
+	if err := (Desired{Primary: primary, Extra: extra, Channel: "stable"}).Validate(); err == nil {
+		t.Errorf("empty --dsp was accepted as a terminal state (%q,%v); it must be a usage error", primary, extra)
 	}
-	if _, ok := ParseMirrorSource("cn"); !ok || DefaultMirrorSource() != MirrorChina {
-		t.Error("DefaultMirrorSource should be cn and parse")
+}
+
+func TestMirrorSource(t *testing.T) {
+	for _, s := range []MirrorSource{MirrorAuto, MirrorChina, MirrorGhproxy, MirrorUpstream} {
+		if got, ok := ParseMirrorSource(string(s)); !ok || got != s {
+			t.Errorf("%s should be a valid preset", s)
+		}
+	}
+	if _, ok := ParseMirrorSource("bogus"); ok {
+		t.Error("bogus mirror source accepted")
 	}
 	if _, ok := ParseMirrorSource("https://x/y"); ok {
 		t.Error("a URL must not parse as a preset")
+	}
+	if _, ok := ParseMirrorSource("cn"); !ok || DefaultMirrorSource() != MirrorChina {
+		t.Error("DefaultMirrorSource should be cn and parse")
 	}
 }
 

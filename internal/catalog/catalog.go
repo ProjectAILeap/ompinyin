@@ -119,7 +119,6 @@ func (d Desired) SchemaList() []string {
 // Layout describes one input layout entry.
 type Layout struct {
 	ID           string // short ID used by CLI and state.json
-	Name         string // human name
 	Schema       string // rime schema name on disk
 	Algebra      string // radical/melt algebra recipe name
 	DoublePinyin bool
@@ -128,14 +127,14 @@ type Layout struct {
 // Layouts is the fixed catalog; algebra names come from the official
 // others/recipes/config.recipe.yaml (algebra_${schema}).
 var Layouts = []Layout{
-	{ID: "quanpin", Name: "全拼", Schema: "rime_ice", Algebra: "algebra_rime_ice", DoublePinyin: false},
-	{ID: "zrm", Name: "自然码", Schema: "double_pinyin", Algebra: "algebra_double_pinyin", DoublePinyin: true},
-	{ID: "flypy", Name: "小鹤", Schema: "double_pinyin_flypy", Algebra: "algebra_double_pinyin_flypy", DoublePinyin: true},
-	{ID: "mspy", Name: "微软", Schema: "double_pinyin_mspy", Algebra: "algebra_double_pinyin_mspy", DoublePinyin: true},
-	{ID: "sogou", Name: "搜狗", Schema: "double_pinyin_sogou", Algebra: "algebra_double_pinyin_sogou", DoublePinyin: true},
-	{ID: "abc", Name: "智能 ABC", Schema: "double_pinyin_abc", Algebra: "algebra_double_pinyin_abc", DoublePinyin: true},
-	{ID: "ziguang", Name: "紫光", Schema: "double_pinyin_ziguang", Algebra: "algebra_double_pinyin_ziguang", DoublePinyin: true},
-	{ID: "jiajia", Name: "拼音加加", Schema: "double_pinyin_jiajia", Algebra: "algebra_double_pinyin_jiajia", DoublePinyin: true},
+	{ID: "quanpin", Schema: "rime_ice", Algebra: "algebra_rime_ice", DoublePinyin: false},
+	{ID: "zrm", Schema: "double_pinyin", Algebra: "algebra_double_pinyin", DoublePinyin: true},
+	{ID: "flypy", Schema: "double_pinyin_flypy", Algebra: "algebra_double_pinyin_flypy", DoublePinyin: true},
+	{ID: "mspy", Schema: "double_pinyin_mspy", Algebra: "algebra_double_pinyin_mspy", DoublePinyin: true},
+	{ID: "sogou", Schema: "double_pinyin_sogou", Algebra: "algebra_double_pinyin_sogou", DoublePinyin: true},
+	{ID: "abc", Schema: "double_pinyin_abc", Algebra: "algebra_double_pinyin_abc", DoublePinyin: true},
+	{ID: "ziguang", Schema: "double_pinyin_ziguang", Algebra: "algebra_double_pinyin_ziguang", DoublePinyin: true},
+	{ID: "jiajia", Schema: "double_pinyin_jiajia", Algebra: "algebra_double_pinyin_jiajia", DoublePinyin: true},
 }
 
 // Lookup finds a layout by short ID.
@@ -251,6 +250,29 @@ func AlgebraPatch(schemaName, algebra string) string {
 	return b.String()
 }
 
+// PairPrimary applies the §2.2 --dsp/--dsp-default/--no-quanpin pairing rules
+// to one command line, so `install --dsp X --dsp-default` and
+// `switch --dsp X --dsp-default` can never drift apart. dsp=="none" means
+// "full pinyin only". Returns the Primary/Extra terminal state.
+//
+// An empty dsp is NOT special-cased to "none": the callers only reach here when
+// --dsp was actually given, and a deliberate live-empty value (shell
+// `--dsp "$VAR"` with VAR unset) must stay an invalid Desired so Validate()
+// rejects it loudly instead of silently dropping the user's double pinyin
+// (§16-16).
+func PairPrimary(dsp string, dspDefault, noQuanpin bool) (string, []string) {
+	switch {
+	case dsp == "none":
+		return "quanpin", nil
+	case noQuanpin:
+		return dsp, nil
+	case dspDefault:
+		return dsp, []string{"quanpin"}
+	default:
+		return "quanpin", []string{dsp}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Assets (§5.3)
 // ---------------------------------------------------------------------------
@@ -291,41 +313,40 @@ const (
 
 var mirrorSources = []MirrorSource{MirrorAuto, MirrorChina, MirrorGhproxy, MirrorUpstream}
 
-// Valid reports whether s is a known preset.
-func (s MirrorSource) Valid() bool {
-	for _, m := range mirrorSources {
-		if s == m {
-			return true
-		}
-	}
-	return false
-}
-
 // DefaultMirrorSource is the default download policy: 国内镜像优先.
 func DefaultMirrorSource() MirrorSource { return MirrorChina }
 
-// ParseMirrorSource maps a --mirror value to a named preset.
+// ParseMirrorSource maps a --mirror value to a known preset.
 func ParseMirrorSource(v string) (MirrorSource, bool) {
 	s := MirrorSource(v)
-	return s, s.Valid()
+	for _, m := range mirrorSources {
+		if s == m {
+			return s, true
+		}
+	}
+	return s, false
 }
 
 // Candidates returns the ordered candidate URLs for an asset under a source
 // policy. Names are appended by the downloader (which knows the cache name).
 func Candidates(a Asset, src MirrorSource) []string {
-	us := []string{a.URL}
+	// policy → candidate families, most preferred first; upstream is always last
+	var families [][]string
 	switch src {
 	case MirrorChina:
-		return dedupe(append(append(append([]string{}, a.CN...), a.Proxy...), us...))
+		families = [][]string{a.CN, a.Proxy, {a.URL}}
 	case MirrorGhproxy:
-		return dedupe(append(append(append([]string{}, a.Proxy...), a.CN...), us...))
+		families = [][]string{a.Proxy, a.CN, {a.URL}}
 	case MirrorUpstream:
-		return dedupe(us)
-	case MirrorAuto, "":
-		return dedupe(append(append(append([]string{}, us...), a.CN...), a.Proxy...))
-	default: // unknown preset: treat as auto
-		return dedupe(append(append(append([]string{}, us...), a.CN...), a.Proxy...))
+		families = [][]string{{a.URL}}
+	default: // MirrorAuto / "" / unknown preset
+		families = [][]string{{a.URL}, a.CN, a.Proxy}
 	}
+	var urls []string
+	for _, f := range families {
+		urls = append(urls, f...)
+	}
+	return dedupe(urls)
 }
 
 func dedupe(xs []string) []string {
@@ -341,14 +362,10 @@ func dedupe(xs []string) []string {
 	return out
 }
 
-// ghproxy wraps an upstream GitHub URL with common China accelerators.
-// gh-proxy.com is the most stable of the ones verified reachable; ghfast.top
-// is flaky (intermittent timeouts) so it stays as a lower-priority fallback.
 // Ghproxy wraps an arbitrary upstream URL with the common China accelerators
-// (same order as ghproxy). Exported for non-asset uses like the releases API.
-func Ghproxy(raw string) []string { return ghproxy(raw) }
-
-func ghproxy(raw string) []string {
+// (same order as the asset candidates). Exported for non-asset uses like the
+// releases API.
+func Ghproxy(raw string) []string {
 	return []string{
 		"https://gh-proxy.com/" + raw,
 		"https://ghfast.top/" + raw,
@@ -396,7 +413,7 @@ func RimeIce(channel string) Asset {
 		return Asset{
 			Name:     "rime-ice-full-nightly.zip",
 			URL:      upstream,
-			Proxy:    ghproxy(upstream),
+			Proxy:    Ghproxy(upstream),
 			MinBytes: rimeIceMinBytes,
 			Magic:    ZipMagic,
 		}
@@ -406,7 +423,7 @@ func RimeIce(channel string) Asset {
 		Name:     "rime-ice-full-stable.zip",
 		URL:      upstream,
 		CN:       []string{"https://mirror.nju.edu.cn/github-release/iDvel/rime-ice/LatestRelease/full.zip"},
-		Proxy:    ghproxy(upstream),
+		Proxy:    Ghproxy(upstream),
 		MinBytes: rimeIceMinBytes,
 		Magic:    ZipMagic,
 	}
@@ -428,7 +445,7 @@ func RimeIceTagged(tag string) Asset {
 		Name:     "rime-ice-full-stable.zip",
 		URL:      upstream,
 		CN:       []string{"https://mirror.nju.edu.cn/github-release/iDvel/rime-ice/" + tag + "/full.zip"},
-		Proxy:    ghproxy(upstream),
+		Proxy:    Ghproxy(upstream),
 		MinBytes: rimeIceMinBytes,
 		Magic:    ZipMagic,
 		Tag:      tag,
@@ -452,7 +469,7 @@ func Wanxiang() Asset {
 		Name:     GrammarLanguage + ".gram",
 		URL:      upstream,
 		CN:       []string{"https://cnb.cool/amzxyz/rime-wanxiang/-/releases/download/model/" + GrammarLanguage + ".gram"},
-		Proxy:    ghproxy(upstream),
+		Proxy:    Ghproxy(upstream),
 		Tag:      "LTS",
 		MinBytes: wanxiangMinBytes,
 		// no Magic: the OSS model container has no documented signature, the
