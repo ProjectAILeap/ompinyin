@@ -92,6 +92,7 @@ Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信；�
 - 候选框跟随 Omarchy 主题也是**默认终态**（无 flag）：`classicui.conf` + `theme-set.d/fcitx5-theme` 钩子入账、按所有权协议覆盖；`~/.local/share/fcitx5/themes/omarchy/` 为钩子生成目录（不入账，但卸载会删）。换主题由钩子自动刷新，勿手改这三个文件。
 - `--x11-hidpi` 是**显式 opt-in**：未显式给出时绝不写 `~/.Xresources`、不装 `xorg-xrdb`、不装单元；启用后**勿再给应用叠加显式缩放因子**（见上）。
 - 勿手改 `~/.Xresources` 里 marker 块之外的内容，勿删别人的 `Xft.dpi`（行级拥有）。
+- **勿在 fcitx5 服务停止时用 `fcitx5-remote`/总线命令探测存活**（`fcitx5-remote -n`/`-q` 也算）：`org.fcitx.Fcitx5` 是唯一总线名，这一步会 D-Bus 激活一个游离 fcitx5 占住它，单元的实例从此启动即退出。存活只用 `pgrep -x fcitx5`；`ompinyin` 的 `status`/`doctor`/`install` 都是安全的（内部只用进程探针）。
 
 ## 排障
 
@@ -101,6 +102,7 @@ Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信；�
 - **L1 装包失败 / 镜像慢**：`ompinyin source`（默认 `--preset cn`，内部 `sudo` 写 `/etc/pacman.d/mirrorlist`，勿 `sudo ompinyin source`）后重跑 `install`。
 - **打不出中文**：多为 `default.custom.yaml` 的 `schema_list` 被改成裸 `- <id>` 短格式（`rime_deployer --build` 会忽略，只出 `build/default.yaml` 骨架）。重跑一次 `ompinyin install` 会重写为 `- schema: <id>` map 格式。
 - **顶栏图标在 ◀ 抽屉里**：说明只启用了 notificationitem 没 pin `Fcitx`——重跑 `install` 补 pin。
+- **`doctor`/`status` 报「IM 三态：fcitx5 服务未运行 + 非单元 fcitx5 占着 org.fcitx.Fcitx5」**（常伴顶栏图标消失、打不出中文）：服务停止时被 D-Bus 激活的游离实例占住了总线名，单元自己 spawn 的实例启动即退出 0，`Restart=always` 把它拖成死循环。重跑 `ompinyin install` 会自动清理再启动（v1.2.2 起；旧版只提示你手跑 `pkill -x fcitx5` 再 `systemctl --user reset-failed … && start …`）。见「红线」——以后别在服务停止时手跑 `fcitx5-remote`。
 - **doctor 报「候选框主题」未达标**：`classicui.conf` 被手改/缺失、钩子缺失，或当前 Omarchy 主题颜色（`~/.local/state/omarchy/current/theme/colors.toml`）不可用（极少见）——重跑 `ompinyin install` 会按所有权协议修复；主题颜色缺失时候选框保持 fcitx5 默认外观，属预期。
 - **首次安装**会接管 `default.custom.yaml`（候选数 9、`,` `.` 翻页），改动前已备份到 `backup-<ts>/`。
 - **headless**：`-y` + 给 pacman 配 NOPASSWD sudoers（工具用 `sudo -n`）。

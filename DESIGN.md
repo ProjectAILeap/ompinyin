@@ -294,6 +294,10 @@ Omarchy **原厂** herdr prefix 就是 Ctrl+Space，所以 **无条件** 写入�
 
 优先发现 `omarchy-fcitx5.service`，缺失回退通用 fcitx5。启停只走 §6.0 那一次，这里不再 stop。
 
+**start 前先清游离实例。** `org.fcitx.Fcitx5` 是唯一总线名，任何非单元 fcitx5 占着它时，单元自己 spawn 的实例会**启动即退出 0**（"another fcitx already running"），`Restart=always` 把它拖成 start-limit-hit 死循环；而 `Type=simple` 的 `systemctl start` 只要进程被 spawn 就返回 0 —— 调用方看到「启动成功」，主机却没有任何可用输入法（真实主机 bug，v1.2.2 修）。所以 `startUnit` 在**单元未激活**时先 `pkill -x fcitx5`，并**等它真的让出总线名**（`pkill` 只保证信号送出）再 start；单元已激活时绝不清——`Start` 同时是幂等的关窗调用，那样会把健康实例一起杀掉。
+
+这个游离实例**极易被自己造出来**：服务停止时任何 `fcitx5-remote` / 总线调用都会 D-Bus 激活一个新的 fcitx5。因此存活探测只用 `pgrep` 进程探针（`FcitxRunning` / `FcitxCount`），**绝不用 `fcitx5-remote` 或总线调用探测存活**（`theme` 的 `ReloadAddonConfig` 是唯一的例外，且它只在已知 fcitx5 在跑时才发）；`verify` 也只在单元已激活时才调 `RemoteState`。
+
 ### 6.4 顶栏输入法图标（必做终态）
 
 Omarchy 默认 `ExecStart=/usr/bin/fcitx5 --disable notificationitem`（注释：避免与 Omarchy 自绘托盘重复），因此**原厂顶栏没有输入法图标**。**取舍**：重开 = 主动接受与 Omarchy 自绘托盘的重复。之所以仍做，是因为顶栏 `omarchy.keyboard-layout` 只显示 XKB 布局（如 `us`），不反映 `rime`/英文这种 IM 级状态——要拿到「当前是中还是英」的可视信号，重开 SNI 是 v1 唯一现实手段（此取舍写入 README）。本工具把「顶栏不点 `◀` 就能看到输入法图标」做成 **L4 必做终态**：每次 `install` / `update` 都收敛到这一步，无退出选项。分两步，缺一不可：
@@ -551,3 +555,5 @@ v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 候选框主
 26. 已 opt-in 的 X11 HiDPI 是**行级拥有**（marker 块内仅 `Xft.dpi`）；`monitors.lua` 与 Hyprland 配置只读不写；`classicui.conf` 永不写。撤销（`--no-x11-hidpi`）先禁 path 单元再删文件；`ApplyX11HiDPI` 在未 opt-in 时 no-op。
 27. X11 HiDPI（§6.7）以 Hyprland `xwayland:force_zero_scaling` 为前置：为 `false`（合成器已缩放 X11）时本模式恒为 no-op——不写 `~/.Xresources`、不装 `xorg-xrdb`、不发布 `Xft.dpi`，plan/doctor 说明原因。`Xft.dpi` 是全局 X11 缩放权，禁止与显式 toolkit 因子叠加。
 28. `~/.Xresources` 的 `Xft.dpi` 是**行级拥有且不与他人竞争**：ompinyin 绝不删除块外的 `Xft.dpi`；块外存在时把 `x11ForeignDpi` 暴露给 plan/doctor——`xrdb` 后者胜，冲突以 L5 报错收场，不静默覆盖。运行中第三方改根窗口属性无实时守护，下次收敛纠正。
+29. 启动服务前先清掉占着 `org.fcitx.Fcitx5` 的游离实例，且**仅当单元未激活时**清（`Start` 是幂等关窗调用，不得误杀健康实例）；清完必须确认它已让出总线名再 start。存活性探测只走进程探针（`pgrep`），**绝不用 `fcitx5-remote`/总线调用**——服务停止时那会 D-Bus 激活一个新的游离实例，正是本故障的成因。
+30. L5 的「服务在跑」判定不得只看 `systemctl --user is-active` 的快照：`Restart=always` 下濒死实例会让它读到几百毫秒的 `active`。单元自称激活却存在**多于一个** fcitx5 进程（`FcitxCount > 1`）即与游离实例抖动共存，L5 必须失败——`install` 绝不能报「终态收敛完成」而 `doctor` 立刻报两项不达标。

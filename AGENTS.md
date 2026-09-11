@@ -75,6 +75,8 @@ L1 软件包（fcitx5-rime/configtool/fcitx5-gtk）→ L2 资源（下载、sha2
 
 5. **Ledger 先于 Desired。** `SaveLedger()` 在每一层把字节落盘后都执行（L2、L3、停止窗口，以及 L5 失败时），持久化 `ManagedFiles`/`Assets`，同时让 `Desired`/`SchemaList` 保持磁盘上的值。否则，一次在 L3 之后失败的收敛，会让下一次运行把 ompinyin 自己的文件归类成 `StatusForeign`。`Save()`（推进 `Desired`）只在成功时执行。
 
+6. **服务停止时绝不用 `fcitx5-remote`/总线探测存活。** `org.fcitx.Fcitx5` 是唯一总线名：任何 D-Bus 调用都会把游离 fcitx5 激活出来占住它 → 单元自己 spawn 的实例**启动即退出 0** → `Restart=always` 拖成 start-limit-hit 死循环，而 `Type=simple` 的 `systemctl start` 仍返回 0（**假成功**：主机没有可用输入法，L5 还可能因瞬时 `active` 窗口打勾）。存活探测只用 `pgrep`（`service.FcitxRunning` / `FcitxCount`）；`startUnit` 在单元未激活时先清游离实例、等它让出总线名再 start。细节：DESIGN §6.3 / §16.29–30。
+
 两层切换（别混淆）：**fcitx5 IM**（`keyboard-us` ↔ `rime`，触发键 `Alt+Space`——选它为了避开 Omarchy herdr 的 Ctrl+Space 前缀）vs **Rime schema**（`rime_ice`/`double_pinyin`…，**F4**）。
 
 ---
@@ -130,7 +132,7 @@ CI（**绝不**跑系统操作、**绝不**碰网络）：gofmt → `go vet` →
 机器可动作的表面。保持 flag 与退出码稳定——改动会破坏 agent 提示词与脚本。
 
 - **退出码**（§7）：`0` 成功 · `1` 执行失败 · `2` 用法错误 · `3` 预检失败 · 第二次 SIGINT 后 `130`。
-- **`--json`** → stdout 是纯 JSON（诊断走 stderr）：`status --json`、`doctor --json`，以及 `install/switch/update --dry-run --json` → `{tool,version,command,desired,plan}`，其中 `plan = {need:{l1,l2,l3,deploy,host,service,tray,theme,hidpi}, steps, needsApply}`（`hidpi` 同时覆盖 opt-in 收敛与 opt-out 撤销；`service` = 已发现 unit 但未运行）。**这三个命令 `--json` 而不加 `--dry-run` 是用法错误（exit 2）**——stdout 绝不混人类文本与 JSON。
+- **`--json`** → stdout 是纯 JSON（诊断走 stderr）：`status --json`、`doctor --json`，以及 `install/switch/update --dry-run --json` → `{tool,version,command,desired,plan}`，其中 `plan = {need:{l1,l2,l3,deploy,host,service,tray,theme,hidpi}, steps, needsApply}`（`hidpi` 同时覆盖 opt-in 收敛与 opt-out 撤销；`service` = 已发现 unit 但未运行，**或** 单元自称激活却与游离实例抖动共存）。**这三个命令 `--json` 而不加 `--dry-run` 是用法错误（exit 2）**——stdout 绝不混人类文本与 JSON。
 - **非交互**：`-y/--yes`；干净序列 = `--dry-run --json` → 断言 `plan.needsApply` → `-y`。无 tty 时自动用 `sudo -n`（需要给 pacman 配 NOPASSWD sudoers；绝不 run as root）。
 - **完成信号**：`plan.needsApply:false`（或 `status` 无差异）= 没事可做——停止，别再跑。
 - **`update --self`**：替换二进制（备份旧的、按 `checksums.txt` 校验 sha256、原子替换）。
