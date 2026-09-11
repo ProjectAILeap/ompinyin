@@ -283,6 +283,10 @@ func TestCacheKeyPerTag(t *testing.T) {
 // ledger, a redownload serving DIFFERENT bytes must be rejected (hard) and
 // the next mirror tried; for a moving tag it must only warn and accept.
 func TestFetchLedgerMismatch(t *testing.T) {
+	// Isolate the cache dir: without this the test writes a.bin@v1 / b.bin into
+	// the developer's real ~/.cache/ompinyin (invisible on CI, where HOME is
+	// throwaway).
+	setCacheDir(t, filepath.Join(t.TempDir(), "cache"))
 	good, bad := []byte("good-bytes"), []byte("bad--bytes")
 	var mode atomic.Value
 	mode.Store("bad")
