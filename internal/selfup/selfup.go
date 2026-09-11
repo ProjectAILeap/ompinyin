@@ -38,6 +38,10 @@ var (
 	Fetch = func(url, dest string) error { return fetch(url, dest) }
 	// Executable is the running binary path. A var so tests can redirect.
 	Executable = os.Executable
+	// Sudo runs a privileged command for a non-root caller. A var so T0 tests
+	// never shell out to the real sudo; the two call sites are the pre-upgrade
+	// backup and the install into an unwritable directory.
+	Sudo = func(args ...string) error { return runSudo(args...) }
 )
 
 // Result reports the outcome of a self-upgrade attempt.
@@ -115,8 +119,13 @@ func assetName() (string, error) {
 }
 
 // replace fetches the asset, verifies its sha256 against checksums.txt, backs
-// up the running binary and replaces it (sudo fallback when the dir is not
-// writable). Temp files are written NEXT TO the exe so rename stays on one fs.
+// up the running binary and replaces it atomically.
+//
+// The downloads are staged in $TMPDIR, which on Omarchy is a DIFFERENT
+// filesystem than the binary (/tmp is tmpfs, $HOME is btrfs). rename(2) cannot
+// cross mounts, so the staged file is copied into the binary's own directory
+// first and renamed there (replaceInDir). The $TMPDIR staging is kept because
+// the sudo fallback installs from it when the directory is not writable.
 func replace(tag, asset string) error {
 	exe, err := Executable()
 	if err != nil {
@@ -160,18 +169,43 @@ func replace(tag, asset string) error {
 	if err := state.CopyFile(exe, bak); err != nil {
 		// The same permission wall as the binary itself: keep the promise of a
 		// pre-upgrade backup by escalating just this copy.
-		if serr := runSudo("cp", "-p", exe, bak); serr != nil {
+		if serr := Sudo("cp", "-p", exe, bak); serr != nil {
 			return fmt.Errorf("备份旧程序 %s：%w", bak, err)
 		}
 	}
 	if err := os.Chmod(binPath, 0o755); err != nil {
 		return err
 	}
-	if err := os.Rename(binPath, exe); err != nil {
+	if err := replaceInDir(binPath, exe); err != nil {
 		// not writable (e.g. /usr/local/bin) — escalate just this write via sudo.
-		if serr := runSudo("install", "-m", "755", binPath, exe); serr != nil {
-			return fmt.Errorf("替换 %s 无权限（%v），sudo 也失败（%v）；请改用用户可写路径（如 ~/.local/bin）或手动下载新版本", exe, err, serr)
+		if serr := Sudo("install", "-m", "755", binPath, exe); serr != nil {
+			return fmt.Errorf("替换 %s 失败（%v），sudo 也失败（%v）；请手动下载新版本并用 `install -Dm755` 放到该路径", exe, err, serr)
 		}
+	}
+	return nil
+}
+
+// replaceInDir installs src as dst by copying it into dst's directory and
+// renaming there. The copy is what makes the replacement work regardless of
+// where src lives: rename(2) returns EXDEV for a src and dst on different
+// mounts (/tmp tmpfs vs the root filesystem), which is exactly the layout on an
+// Omarchy host — the bug that made every `update --self` fail with a
+// misleading "无权限". The copy is removed again when the rename fails, so a
+// failed attempt leaves no litter next to the binary.
+func replaceInDir(src, dst string) error {
+	staged := filepath.Join(filepath.Dir(dst), "."+filepath.Base(dst)+".new")
+	if err := state.CopyFile(src, staged); err != nil {
+		return err // unwritable directory: the signal for the sudo fallback
+	}
+	// CopyFile opens with 0644; without this the replaced binary loses its
+	// executable bit.
+	if err := os.Chmod(staged, 0o755); err != nil {
+		_ = os.Remove(staged)
+		return err
+	}
+	if err := os.Rename(staged, dst); err != nil {
+		_ = os.Remove(staged)
+		return err
 	}
 	return nil
 }
