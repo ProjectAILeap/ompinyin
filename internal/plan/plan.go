@@ -60,16 +60,6 @@ func (p *Plan) Add(layer, title string, needed bool) *Plan {
 	return p
 }
 
-// HasWork reports whether any step needs execution.
-func (p *Plan) HasWork() bool {
-	for _, s := range p.Steps {
-		if s.Needed {
-			return true
-		}
-	}
-	return false
-}
-
 // Describe renders the human-friendly step listing with [计划]/[跳过] markers.
 func (p *Plan) Describe() string {
 	var out string
@@ -205,9 +195,9 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	} else if c.X11DPIDesired == 0 {
 		p.Add("L4", "X11 HiDPI：未采集 X11 事实", false)
 	} else if p.NeedHidpi {
-		p.Add("L4", fmt.Sprintf("X11 HiDPI：收敛 Xft.dpi=%d、发布 xrdb 并安装缩放监听%s", c.X11DPIDesired, x11ForeignNote(c)), true)
+		p.Add("L4", fmt.Sprintf("X11 HiDPI：收敛 Xft.dpi=%d、发布 xrdb 并安装缩放监听%s", c.X11DPIDesired, c.X11ForeignNote()), true)
 	} else {
-		p.Add("L4", fmt.Sprintf("X11 HiDPI 已发布 Xft.dpi=%d%s", c.X11DPIDesired, x11ForeignNote(c)), false)
+		p.Add("L4", fmt.Sprintf("X11 HiDPI 已发布 Xft.dpi=%d%s", c.X11DPIDesired, c.X11ForeignNote()), false)
 	}
 
 	// L4 candidate-window theming (§6.6)
@@ -221,17 +211,6 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	// L5 verify (read-only)
 	p.Add("L5", "复核：build 产物 / grammar 编入 / IM 三态 / 托盘可见 / 候选框主题", true)
 	return p
-}
-
-// x11ForeignNote warns when ~/.Xresources assigns Xft.dpi outside ompinyin's
-// managed block. Ownership is line-scoped, so a competing line is never
-// removed; xrdb applies assignments in file order (last wins), which makes the
-// outcome ordering-dependent. Surface it instead of pretending convergence.
-func x11ForeignNote(c *observe.Current) string {
-	if !c.X11ForeignDPI {
-		return ""
-	}
-	return "；注意：~/.Xresources 存在块外 Xft.dpi 行（xrdb 按文件顺序、后者胜）"
 }
 
 // x11OptionalNote renders the read-only X11 HiDPI diagnosis shown when the

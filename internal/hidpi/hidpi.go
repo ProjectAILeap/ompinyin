@@ -222,17 +222,17 @@ func HasForeignXftDPI(in string) bool {
 }
 
 // ReadScale implements the documented read-only source fallback order.
-func ReadScale(monitorsJSON, monitorsLua, xresources []byte) (float64, string) {
+func ReadScale(monitorsJSON, monitorsLua, xresources []byte) float64 {
 	if s, ok := ScaleFromMonitorsJSON(monitorsJSON); ok {
-		return s, "hyprctl"
+		return s
 	}
 	if s, ok := ScaleFromMonitorsLua(monitorsLua); ok {
-		return s, "monitors.lua"
+		return s
 	}
 	if dpi, ok := ParseXftDPI(xresources); ok && dpi > 0 {
-		return float64(dpi) / 96, "Xresources"
+		return float64(dpi) / 96
 	}
-	return 1, "default"
+	return 1
 }
 
 // Run is the command seam for hyprctl and xrdb.  Keeping it here makes the

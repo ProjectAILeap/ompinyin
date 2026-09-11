@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ProjectAILeap/ompinyin/internal/assets"
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/deploy"
 	"github.com/ProjectAILeap/ompinyin/internal/hidpi"
@@ -71,7 +70,6 @@ type Current struct {
 	DropInOK     bool
 	DropInPath   string
 
-	Pinned       []string
 	PinnedHasFc  bool
 	ShellRunning bool
 
@@ -165,7 +163,6 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 	}
 	if b, err := os.ReadFile(tray.ShellJSONPath(state.Home())); err == nil {
 		if pinned, perr := tray.ReadPinned(b); perr == nil {
-			c.Pinned = pinned
 			c.PinnedHasFc = tray.HasPin(pinned)
 		}
 	}
@@ -181,7 +178,7 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 	monitors, _ := hidpi.Run("hyprctl", "monitors", "-j")
 	lua, _ := os.ReadFile(filepath.Join(state.Home(), ".config", "hypr", "monitors.lua"))
 	xr, _ := os.ReadFile(hidpi.XresourcesPath(state.Home()))
-	c.X11Scale, _ = hidpi.ReadScale(monitors, lua, xr)
+	c.X11Scale = hidpi.ReadScale(monitors, lua, xr)
 	c.X11DPIDesired = hidpi.DPI(c.X11Scale)
 	if actual, err := hidpi.Run("xrdb", "-query"); err == nil {
 		c.X11Available = true
@@ -237,6 +234,18 @@ func profileHasRime(content string) bool {
 	return false
 }
 
+// X11ForeignNote warns when ~/.Xresources assigns Xft.dpi outside ompinyin's
+// managed block. Ownership is line-scoped, so a competing line is never
+// removed; xrdb applies assignments in file order (last wins), which makes the
+// outcome ordering-dependent — the live-value diff already fails L5 in that
+// case, this note explains why before the user has to read the raw values.
+func (c *Current) X11ForeignNote() string {
+	if !c.X11ForeignDPI {
+		return ""
+	}
+	return "；注意：~/.Xresources 存在块外 Xft.dpi 行（xrdb 按文件顺序、后者胜，冲突时以实际值为准）"
+}
+
 // probeAll reports whether every path exists.
 func probeAll(paths ...string) bool {
 	for _, p := range paths {
@@ -246,6 +255,3 @@ func probeAll(paths ...string) bool {
 	}
 	return true
 }
-
-// CacheDir exposes the asset cache for clean/status.
-func CacheDir() string { return assets.CacheDir() }

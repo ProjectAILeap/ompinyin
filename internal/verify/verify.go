@@ -72,10 +72,10 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 			Detail: "Hyprland force_zero_scaling=false：合成器已在缩放 X11 窗口，无需 Xft.dpi（发布反而会二次放大）"})
 	} else if c.X11Available {
 		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK && c.X11DPIActual == c.X11DPIDesired,
-			Detail: fmt.Sprintf("Xft.dpi 期望=%d 实际=%d（scale=%.2f）%s", c.X11DPIDesired, c.X11DPIActual, c.X11Scale, x11ForeignNote(c))})
+			Detail: fmt.Sprintf("Xft.dpi 期望=%d 实际=%d（scale=%.2f）%s", c.X11DPIDesired, c.X11DPIActual, c.X11Scale, c.X11ForeignNote())})
 	} else {
 		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK,
-			Detail: "未检测到 XWayland；已收敛 Xresources 与缩放监听，待 X11 会话发布" + x11ForeignNote(c)})
+			Detail: "未检测到 XWayland；已收敛 Xresources 与缩放监听，待 X11 会话发布" + c.X11ForeignNote()})
 	}
 
 	// 5. candidate-window theming (§6.6)
@@ -102,18 +102,6 @@ func x11OptionalDetail(c *observe.Current) string {
 	}
 	return fmt.Sprintf("未启用（scale=%.2f 期望 Xft.dpi=%d；无可用 X 会话）%s；Xft.dpi 是全局 XWayland 资源，候选框过小时用 install --x11-hidpi 启用。",
 		c.X11Scale, c.X11DPIDesired, residual)
-}
-
-// x11ForeignNote warns when ~/.Xresources assigns Xft.dpi outside ompinyin's
-// managed block. ompinyin never removes a competing line, and xrdb applies
-// assignments in file order (last wins), so a competing line after the block
-// defeats convergence — the live-value diff already fails L5 in that case;
-// this note explains why before the user has to read the raw values.
-func x11ForeignNote(c *observe.Current) string {
-	if !c.X11ForeignDPI {
-		return ""
-	}
-	return "；注意：~/.Xresources 存在块外 Xft.dpi 行（xrdb 按文件顺序、后者胜，冲突时以实际值为准）"
 }
 
 // themeCheck reports whether the candidate window follows the Omarchy theme:

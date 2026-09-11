@@ -7,7 +7,6 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/observe"
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
-	"github.com/ProjectAILeap/ompinyin/internal/tray"
 )
 
 func freshCurrent() *observe.Current {
@@ -25,7 +24,7 @@ func freshCurrent() *observe.Current {
 func TestDiffFreshHost(t *testing.T) {
 	d := catalog.DefaultDesired()
 	p := Diff(d, freshCurrent(), false)
-	if !p.HasWork() {
+	if !p.NeedsApply() {
 		t.Fatal("fresh host must have work")
 	}
 	out := p.Describe()
@@ -61,7 +60,6 @@ func convergedCurrent() *observe.Current {
 	c.DropInExists = true
 	c.DropInOK = true // present AND enabling notificationitem for the live unit
 	c.PinnedHasFc = true
-	c.Pinned = []string{tray.FcitxId}
 	c.ThemeEqual = true
 	c.ThemeDirOK = true
 	c.ThemeConfOK = true

@@ -259,19 +259,13 @@ var RestartShell = func() error {
 // plain string (tested on the host). Tray.qml's pinnedIds is
 // `settings.pinned instanceof Array ? ... : []`, so a string leaves the icon
 // UNPINNED. Writing the array is the only way to actually pin.
-func SetPinned(shellJSONPath string, pinned []string) error {
-	return updatePin(shellJSONPath, pinned)
-}
-
-// updatePin reads shell.json (tolerantly), locates the omarchy.tray entry and
-// sets its pinned to the given array, then atomically writes the file.
 //
 // Concurrency: the shell itself and `omarchy bar set` also write this file.
 // A plain read-modify-write can therefore drop a change made between our read
 // and our rename (评审 P1-3). The write is retried against whatever is on disk
 // now — the merge is additive and idempotent, so re-running it on top of a
 // concurrent edit converges instead of overwriting.
-func updatePin(shellJSONPath string, pinned []string) error {
+func SetPinned(shellJSONPath string, pinned []string) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		before, err := readOrNil(shellJSONPath)
