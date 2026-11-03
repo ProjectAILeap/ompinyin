@@ -37,7 +37,7 @@
 ### D6 profile 只注册 rime，不再注册 `keyboard-us`
 `DefaultProfile()` 只写 `rime`（`EnsureRime` 只增不删）。
 **理由**：中英切换是 rime 引擎的 `ascii_composer`，与 fcitx5 的 IM 列表无关；旧版新机器两个 IM、老机器一个，谁都不一致。
-**影响**：`Ctrl+Space` 的语义 = 开/停用输入法（停用即走 XKB 布局）；`AGENTS`/skill/qa 的措辞都要跟着。见 `design.md §2.3`。
+**影响**：`Ctrl+Space` 的语义 = 在 IM 组内切到 `keyboard-us`（走 XKB 布局）；单 IM 组里它**不动作**（`canTrigger()` 要求条目数 > 1，见 P9）。`AGENTS`/skill/qa 的措辞都要跟着。见 `design.md §2.3` / §6.1。
 
 ### D7 手感项受管，取一组"有默认答案"的集合
 受管：`menu/page_size: 9`、`,`/`.` 翻页、`ascii_composer/switch_key/Shift_L|R = commit_code`、
@@ -52,7 +52,7 @@
 |---|---|---|
 | 中英 | 左右 `Shift`（`commit_code`） | rime 引擎内 |
 | 方案（全拼↔双拼） | `F4` | rime `switcher`（`catalog.SwitcherHotkeys`） |
-| 输入法开/停用（单 IM 时） | `Ctrl+Space` | fcitx5 `[Hotkey/TriggerKeys]`（`hotkey.DefaultKeys`） |
+| 切到英文键盘（组内 IM > 1 时） | `Ctrl+Space` | fcitx5 `[Hotkey/TriggerKeys]`（`hotkey.DefaultKeys`） |
 
 `hotkey.PruneKeys = ["Alt+space"]`（旧版本写过的值，且是"窗口菜单"通用键）；键名按 `Ctrl`/`Control` 与大小写归一。
 
@@ -66,7 +66,8 @@
 - rime 方案选单只留 `F4`：上游的 `Control+grave`/`Control+Shift+grave` 与 VS Code 终端开关（`Ctrl+\``）、
   JetBrains Quick switch scheme 冲突，误触代价高（多开一个终端）。
 
-**影响**：单 IM 时 `Ctrl+Space` = 开/停用；停用后 rime 收不到键（Shift/F4 失效）属预期。
+**影响**：`Ctrl+Space` **只在组内 IM 数 > 1 时动作**（`Instance::trigger` 先判 `canTrigger() == inputMethodList().size() > 1`）；默认组是 `[rime keyboard-us]`，它切到 `keyboard-us`。单 IM 组里它是**纯 no-op**——v1.3.1 曾写「单 IM 时 = 开/停用」，2026-11-03 由源码证伪，见 P9；组形状因此是 `Desired.IMs`（`design.md` §6.1）。
+**另一侧（同一前提）**：出厂 `[Hotkey/AltTriggerKeys] = Shift_L`，在 >1 个 IM 时与触发键**走同一个 `toggle()`**，于是左 Shift 变成「第二个 Ctrl+Space」，rime 的 `Shift_L: commit_code` 永远收不到键 → 收敛把该段清空，且只能用「空 section」编码（缺段=回落默认），见 `design.md` §6.2 / P9。
 **新装 Omarchy 是冲突现场**（出厂 herdr 也是 `ctrl+space`），所以加了跨工具检测：`observe.HerdrPrefix` 按 herdr 的顺序读
 `$HERDR_CONFIG_PATH` → `~/.config/herdr/config.toml` → 内置 `ctrl+b`；`HerdrConflict` 归一比较后进 `doctor`/`status` 的
 告警行，写触发键时也打 `[警告]`。**只告警**：不改她的配置，也不偷偷换键（`Desired` 必须来自命令行）。
@@ -192,3 +193,37 @@ text-input 上下文。
 **教训**：「重启之后失效」和「一直没有过」在症状上长得一模一样。写进档案之前先证伪：该应用在
 **没有任何改动**时到底能不能用？判据是 `pgrep -af <app> | rg enable-wayland-ime` 与
 `hyprctl -j clients` 的 `xwayland` 字段。真实修复见 `qa.md`「某个应用里打不出中文」。
+
+### P9 左 Shift 与 Ctrl+Space 变成同一件事（v1.3.2 修）
+
+**现象**：升级后左 Shift 与 `Ctrl+Space` 行为完全相同（都在 `rime ↔ keyboard-us` 之间切），右 Shift 正常
+（在 rime 内切中英）。用户报告「左 Shift 和 Ctrl+Space 功能一样了」。
+
+**根因（源码 + 真机）**：
+- fcitx5 的 `TriggerKeys`（`Ctrl+Space`）与 `AltTriggerKeys`（出厂 `Shift_L`）**最终都调用同一个
+  `Instance::toggle()`**：`Instance::altTrigger` → `toggle`；`Instance::trigger(ic, totallyReleased=true)` → `toggle`。
+  差别只在 `canTrigger()`（组条目 > 1）、`canAltTrigger()`（需激活态或由它关闭）与「按住修饰键时的枚举」。
+- 因此左 Shift 与触发键**默认就是同义**——只要组里有第二个 IM。
+- 老版本 ompinyin 的 `DefaultProfile` 建过 `keyboard-us`，而 `EnsureRime` 只加不删；v1.3.1 改成「新装只留
+  `rime`」后两代机器不一致：新装组内 1 项（`canTrigger()` 假 → 左 Shift 落到 rime，正常），升级机组内 2 项
+  （`canTrigger()` 真 → 左 Shift 被 AltTrigger 吃掉）。
+- 而 v1.3.1 写的 `doctor` 检查只看 `[Hotkey/TriggerKeys]` 是否等于目标值，从不看组条目数与
+  `AltTriggerKeys`，于是一台坏机器也报「[完成] 触发键：Control+space（开/停用输入法；中英切换在 rime
+  内由 Shift 完成）」——假绿。
+
+**修复**：把「组的形状」和「AltTriggerKeys 为空」都当成终态。
+`Desired.IMs`（默认 `[rime keyboard-us]`；`--single-im` / `--english-im`）+ `profile.ConvergeGroup`
+（增删/重排/重编号）+ `hotkey.EnsureAltTriggerEmpty`（空 section 编码，INI 无法表达空列表值）+
+L5 两条新检查（`输入法组`、`AltTriggerKeys`）+ doctor 的触发键文案按 IM 数分流。
+
+**真机验证**（fcitx5 5.1.23，2026-11-03）：`wtype -M shift -m shift` 后 `fcitx5-remote -n` 仍为 `rime`
+（修复前会变 `keyboard-us`）；对照组 `wtype -M ctrl -k space -m ctrl` 仍正常切到 `keyboard-us`。
+`fcitx5` 重启、`install` 收敛、`provision` 全跑一遍后保持。
+
+**回归**：`internal/profile`（ConvergeGroup/GroupIMs）、`internal/hotkey`（EnsureAltTriggerEmpty）、
+`internal/plan`（形状漂移算 L4 工作）、`internal/verify`（两条新检查）、
+`internal/converge`（`TestInstallConvergesLegacyGroupAndAltTrigger`）——共 10 个用例。
+
+**教训**：一个键「和另一个键一样」时，先查**它们是不是调了同一个函数**，再查前提条件（这里是
+`canTrigger()`）；声明式终态必须把**前提**也纳入终态，否则「收敛成功」只证明配置文件写对了，
+不证明承诺的行为发生。

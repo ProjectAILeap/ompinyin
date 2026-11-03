@@ -33,10 +33,10 @@ ompinyin --help          # 验证
 |---|---|
 | 打中文 | 直接打（默认雾凇全拼） |
 | 临时打英文 | 按一下 **Shift**（正在打的编码会先上屏） |
-| 整体关掉输入法 | **Ctrl+Space**（再按回来） |
+| 切到英文键盘 | **Ctrl+Space**（切到系统英文键盘，再按回中文） |
 | 换方案（全拼 ↔ 双拼） | **F4**，在弹出的「方案选单」里选 |
 
-三个键互不干扰：Shift 只管中英（候选框照常），Ctrl+Space 关掉输入法后 Shift/F4 都不生效，F4 只换方案。
+三个键互不干扰：Shift 在 rime 里切中英（候选框照常、中文标点规则仍生效）；Ctrl+Space 切到系统英文键盘（此时 Shift/F4 都不生效）；F4 只换方案。
 
 顶栏会有一个输入法图标，显示当前是中文还是英文状态。
 
@@ -65,6 +65,18 @@ ompinyin install --dsp flypy --dsp-default # 小鹤双拼作为默认方案
 
 布局：`zrm` 自然码 · `flypy` 小鹤 · `mspy` 微软 · `sogou` 搜狗 · `abc` 智能 ABC · `ziguang` 紫光 · `jiajia` 拼音加加。
 **最多一个双拼**；切换用 F4。
+
+## 只想要 Shift 切中英，不要那套英文键盘？（可选）
+
+默认把 fcitx5 的输入法组收敛成 `[rime, keyboard-us]` 两项——**只有两项时 `Ctrl+Space` 才可能有动作**
+（fcitx5 硬约束：所有 IM 热键都以「组内 > 1 个 IM」为前提）。不想要英文键盘：
+
+```bash
+ompinyin install --single-im    # 组里只留 rime；Ctrl+Space 不再生效（中英全靠 Shift）
+ompinyin install --english-im pinyin   # 换掉第二个 IM 的 id
+```
+
+单 IM 时期望的行为就是「`Ctrl+Space` 什么都不做」，这不是故障。
 
 ## 旧 X11 应用里的候选框偏小？（可选）
 

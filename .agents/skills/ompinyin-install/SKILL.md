@@ -40,7 +40,9 @@ description: >
 3) ompinyin install -y                 # 收敛：全拼 + 万象 + 顶栏图标 + 候选框跟随主题
 4) ompinyin status && ompinyin doctor  # 须无差异、全通过
 5) 人工核对：
-     · Ctrl+Space  开/停用输入法（停用 = 直接走键盘布局输英文）；判据是按键前后 `fcitx5-remote` 是否 2 → 1。
+     · Ctrl+Space  在 IM 组内切到英文键盘（默认组 `[rime keyboard-us]` = 直接走键盘布局输英文）；
+     判据是按键前后 `fcitx5-remote` 的 IM 名是否 `rime` → `keyboard-us`。组内只有 rime 时它**不动作**
+     （fcitx5 的 `canTrigger()` 要求条目数 > 1）。
                    它与 herdr 的 prefix 天然冲突，所以 herdr 前缀应为 `ctrl+b`（dotfiles 侧，本工具不管）
      · 左右 Shift  在 rime 内切中英（受管手感项，`commit_code`；不依赖输入法开关）
      · F4          切 Rime 方案（全拼 ↔ 双拼；fcitx5 的输入法列表里只有一项 "Rime"）
