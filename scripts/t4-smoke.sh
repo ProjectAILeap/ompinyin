@@ -118,7 +118,7 @@ ok "publisher unit restored to $exec_path; doctor still clean"
 
 # ---------------------------------------------------------------- manual items
 cat <<'EOF'
-  still manual (§15): F4 schema switch, Alt+Space tri-state, top-bar icon visible,
+  still manual (§15): F4 schema switch, Ctrl+Space on/off + Shift 中英, top-bar icon visible,
   SIGINT inside a stop window restarts fcitx5, backup rollback, --dsp grammar in both schemas.
 EOF
 ok "T4 smoke passed"
