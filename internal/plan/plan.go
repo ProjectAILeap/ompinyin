@@ -149,7 +149,12 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	// The deploy (rime_deployer --build) must re-run not only when build
 	// artifacts are missing but also when managed content changed (schema
 	// list / grammar edits), otherwise the new config is never compiled.
-	p.NeedDeploy = len(c.BuildMissing) > 0 || p.NeedL3
+	// A forced L2 refresh re-extracts the data files, so even when the bytes are
+	// identical the rime sources end up NEWER than build/ — and the deploy is the
+	// only thing that puts them back in sync. Skipping it left `update` with a
+	// source/build timestamp inversion that reads exactly like the stale-build
+	// trap (docs/dev-notes.md P4), so `update` always deploys.
+	p.NeedDeploy = len(c.BuildMissing) > 0 || p.NeedL3 || forceL2
 	p.NeedHost = !c.ProfileHasRime || !c.HotkeyOK || !c.DropInOK
 	// "fcitx5 is running" is part of the L4 terminal state (verify checks it,
 	// §6.4 needs the SNI item live). Without this predicate a host whose unit

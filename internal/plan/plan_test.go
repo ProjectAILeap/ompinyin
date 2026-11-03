@@ -293,3 +293,26 @@ func TestPlanServiceNeedsFlapRepair(t *testing.T) {
 		}
 	}
 }
+
+// TestDiffForceL2Deploys: `update` re-extracts the rime data files, so even when
+// the bytes are identical the sources end up newer than build/. The deploy must
+// follow, or the host is left with a source/build timestamp inversion that reads
+// like a stale build (dev-notes P4) — and `update`'s contract is "refresh and
+// recompile".
+func TestDiffForceL2Deploys(t *testing.T) {
+	// Reuse the fully-converged fixture: every layer satisfied, so any deploy
+	// that shows up can only come from the forced refresh.
+	c := convergedCurrent()
+	d := catalog.DefaultDesired()
+
+	if plain := Diff(d, c, false); plain.NeedDeploy {
+		t.Fatal("a converged host must not deploy (idempotence)")
+	}
+	forced := Diff(d, c, true)
+	if !forced.NeedL2 {
+		t.Error("forceL2 must refresh L2")
+	}
+	if !forced.NeedDeploy {
+		t.Error("forceL2 must also deploy: re-extracted sources would never be compiled")
+	}
+}
