@@ -178,8 +178,17 @@ strings /usr/lib/baidunetdisk/baidunetdisk | rg -c 'Xft.dpi|GDK_SCALE'   # 0
 - 开发问题修掉后在条目标题上标版本（如 `P1 …（v1.3 修）`），保留证据与回归测试名。
 - 用户能感知的操作步骤不要写这里 —— 写 `qa.md`。
 
-### P8 重启 fcitx5 会打断正在运行的原生 Wayland 应用
-**现象**：fcitx5 重启之后，已经开着的 Electron/CEF 应用（飞书等）中文输入失效，其它应用正常；重启该应用才恢复。
-**根因**：客户端在启动时与旧的 fcitx5 建立 `zwp_input_method` 会话；IM 进程换掉后该会话失效，部分客户端不会重建。
-**影响**：`make smoke` 天生会 stop/start fcitx5 两次（stray 阶段 + install），所以跑完冒烟要把这类应用重启一次。
-**判据**：重启应用后仍然不行 ⇒ 不是这个原因，去查它有没有传 `--enable-wayland-ime`（见 `qa.md`）。
+### P8（误诊，已撤回）曾把「飞书打不出中文」归因为 fcitx5 重启
+
+**当时的判断**：飞书在 fcitx5 重启之前启动、重启之后中文失效 ⇒ 客户端与旧 IM 的
+`zwp_input_method` 会话失效且不会重建，需要重启应用。
+
+**为什么是错的**：真因是飞书走原生 Wayland 却没传 `--enable-wayland-ime`（Chromium 默认关闭
+`zwp_text_input_v3`）——它**从来就没能**中文输入，和重启无关。加上该 flag 之后，飞书在 fcitx5
+又重启两次（`make smoke`）的情况下**无需重启也正常**；Obsidian（08:34 启动）、Zed（11:41 启动）
+同样跨过重启仍然可用 ⇒ 现代 fcitx5 + Hyprland 会在 IM 重启后重新协商，客户端自己重建
+text-input 上下文。
+
+**教训**：「重启之后失效」和「一直没有过」在症状上长得一模一样。写进档案之前先证伪：该应用在
+**没有任何改动**时到底能不能用？判据是 `pgrep -af <app> | rg enable-wayland-ime` 与
+`hyprctl -j clients` 的 `xwayland` 字段。真实修复见 `qa.md`「某个应用里打不出中文」。
