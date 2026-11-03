@@ -21,10 +21,14 @@ jobs:
         run: go vet ./...
       # 评审里一半的缺陷（渲染了未排序的切片、未使用的 ordered 变量、被丢弃的
       # error 返回值、panic 路径）都属于 lint 可拦类，所以 lint 是必过门槛。
+      # 版本必须至少用 Go 1.27 构建：更旧的 golangci-lint 读不了 Go 1.27 的
+      # export data（"export data version 5 is greater than maximum supported
+      # version 4"），会在 typecheck 阶段把每个 import 都判成错误。
+      # v2.13.2 就是这种情况；v2.15.0 本地实测 0 issues。
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.13.2
+          version: v2.15.0
           args: --timeout 5m
       - name: go test
         run: go test -race ./...
