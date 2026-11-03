@@ -177,3 +177,9 @@ strings /usr/lib/baidunetdisk/baidunetdisk | rg -c 'Xft.dpi|GDK_SCALE'   # 0
 - 决策变了就改对应的 `D<n>`（不要新增一条"补充说明"），并同步 `design.md` 的对应 §。
 - 开发问题修掉后在条目标题上标版本（如 `P1 …（v1.3 修）`），保留证据与回归测试名。
 - 用户能感知的操作步骤不要写这里 —— 写 `qa.md`。
+
+### P8 重启 fcitx5 会打断正在运行的原生 Wayland 应用
+**现象**：fcitx5 重启之后，已经开着的 Electron/CEF 应用（飞书等）中文输入失效，其它应用正常；重启该应用才恢复。
+**根因**：客户端在启动时与旧的 fcitx5 建立 `zwp_input_method` 会话；IM 进程换掉后该会话失效，部分客户端不会重建。
+**影响**：`make smoke` 天生会 stop/start fcitx5 两次（stray 阶段 + install），所以跑完冒烟要把这类应用重启一次。
+**判据**：重启应用后仍然不行 ⇒ 不是这个原因，去查它有没有传 `--enable-wayland-ime`（见 `qa.md`）。

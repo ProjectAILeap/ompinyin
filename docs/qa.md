@@ -39,6 +39,26 @@ ompinyin install -y        # 会清掉游离实例并把服务拉起来
 
 **注意**：不要在服务停止时手跑 `fcitx5-remote`/`fcitx5-remote -n` 去"看看活着没"——那会激活一个游离实例，反而把输入法弄坏。看状态用 `pgrep -x fcitx5` 或 `ompinyin doctor`。
 
+## 某个应用里打不出中文，别的应用都正常（飞书 / 百度网盘这类 CEF 应用）
+
+原生 Wayland 的 Chromium/Electron/CEF 应用**默认关闭** Wayland 输入法协议（`zwp_text_input_v3`），
+必须显式传 `--enable-wayland-ime`，否则那个窗口根本收不到 fcitx5 —— 表现就是「只有中文打不出来，
+其它一切正常」，重启应用也没用（flag 没变）。
+
+以飞书（`feishu-bin`）为例，它的桌面项里有 `--ozone-platform-hint=auto`（走原生 Wayland）：
+
+```ini
+Exec=feishu --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations --enable-wayland-ime %U
+```
+
+- 改完必须**完全退出应用再打开**（只关窗口不算，这类应用是单实例的）。
+- 判据：`pgrep -af bytedance-feishu | rg enable-wayland-ime` 能看到该 flag。
+- 若加了 flag 仍不行：退回 XWayland（走 XIM）并用显式缩放补尺寸 ——
+  `--ozone-platform=x11 --force-device-scale-factor=2`。
+
+> 两种情况的区别：**XWayland 应用**靠 XIM/`XMODIFIERS`，通常能打中文；**原生 Wayland 应用**必须支持
+> text-input-v3。GTK/Qt/终端都支持，CEF 系需要那个 flag。
+
 ## X11 应用（微信、百度网盘）里候选框特别小
 
 这是 XWayland 的固定行为：那些应用用的是 fcitx5 的 **X11 候选窗**，它的字号只认一个全局值 `Xft.dpi`。
