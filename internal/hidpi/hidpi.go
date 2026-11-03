@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 )
@@ -275,6 +277,131 @@ func ReadScale(monitorsJSON, monitorsLua, xresources []byte) float64 {
 		return float64(dpi) / 96
 	}
 	return 1
+}
+
+// ToolkitScaleVars are the per-toolkit scale knobs DESIGN §6.7 forbids stacking
+// with Xft.dpi: GTK3/X11 reads both the GDK factor and the X resource, so the
+// product is what turns a 2x screen into 4x. Omarchy's own monitors.lua ships
+// GDK_SCALE=2, so this is the normal case, not an exotic one.
+var ToolkitScaleVars = []string{"GDK_SCALE", "GDK_DPI_SCALE", "QT_SCALE_FACTOR"}
+
+// ToolkitScaleFactors lists the explicit (non-1) toolkit factors in the
+// session, formatted KEY=value in ToolkitScaleVars order.
+func ToolkitScaleFactors(get func(string) string) []string {
+	var out []string
+	for _, k := range ToolkitScaleVars {
+		v := strings.TrimSpace(get(k))
+		if v == "" || v == "1" || v == "1.0" {
+			continue
+		}
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
+// ToolkitScaleFactorsInSession reads the factors the SESSION has, not just the
+// ones this process inherited: the publisher unit's environment is frozen at
+// start and may predate Hyprland's hl.env (the same trap ImportSessionEnv
+// documents), and a bare shell run carries none of them. The manager is
+// therefore consulted as a fallback; the process env wins when both know a key.
+func ToolkitScaleFactorsInSession() []string {
+	env := map[string]string{}
+	if b, err := ShowEnvironment(); err == nil {
+		env = ParseShowEnvironment(b)
+	}
+	return ToolkitScaleFactors(func(k string) string {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+		return env[k]
+	})
+}
+
+// SessionEnvKeys are the variables an X11 child needs to reach the session.
+// DISPLAY alone is not enough: hyprctl also needs HYPRLAND_INSTANCE_SIGNATURE,
+// and without it the force_zero_scaling precondition silently falls back to its
+// default instead of checking the host.
+var SessionEnvKeys = []string{"DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE", "WAYLAND_DISPLAY"}
+
+// ParseShowEnvironment parses `systemctl --user show-environment` output (one
+// KEY=VALUE per line). Unassignments (`-KEY`) and non-assignments are dropped.
+func ParseShowEnvironment(b []byte) map[string]string {
+	env := make(map[string]string, len(SessionEnvKeys))
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || k == "" {
+			continue
+		}
+		env[k] = v
+	}
+	return env
+}
+
+// SessionEnvToImport returns the SessionEnvKeys the manager knows but this
+// process is missing. A set-but-empty process value counts as missing: the
+// publisher unit inherits an environment that has no DISPLAY at all.
+func SessionEnvToImport(env map[string]string, get func(string) string) map[string]string {
+	missing := make(map[string]string, len(SessionEnvKeys))
+	for _, k := range SessionEnvKeys {
+		if get(k) != "" {
+			continue
+		}
+		if v := env[k]; v != "" {
+			missing[k] = v
+		}
+	}
+	return missing
+}
+
+// ShowEnvironment reads the systemd user manager's activation environment.
+var ShowEnvironment = func() ([]byte, error) {
+	return Run("systemctl", "--user", "show-environment")
+}
+
+// ImportPollInterval and ImportTimeout bound the wait for the manager to learn
+// the session. Vars so T0 can poll at zero cost.
+var (
+	ImportPollInterval = 200 * time.Millisecond
+	ImportTimeout      = 10 * time.Second
+)
+
+// ImportSessionEnv fills the SessionEnvKeys this process is missing from the
+// systemd user manager, polling up to ImportTimeout. Returns the keys it set.
+//
+// Why this exists (thinkbook-omarchy, 2026-11-03): the publisher unit is pulled
+// in by graphical-session.target, which on uwsm/Omarchy is reached ~3s BEFORE
+// the compositor's finalize step imports DISPLAY into the manager (unit exec
+// 08:26:11.9, `DISPLAY (already set)` exported 08:26:13.5). systemd freezes a
+// unit's environment at start, so "DISPLAY is inherited from the graphical
+// session" holds only for interactive runs: at login xrdb fails with
+// "Can't open display ”" and the publish is skipped for the whole session,
+// because the path unit only watches monitors.lua. Waiting cannot fix a frozen
+// snapshot — the value has to be fetched from the manager, and only once it is
+// there.
+//
+// Best-effort: a host with no manager, or a pure-Wayland session with no
+// DISPLAY, legitimately ends up importing nothing.
+func ImportSessionEnv() (filled []string) {
+	deadline := time.Now().Add(ImportTimeout)
+	for {
+		if b, err := ShowEnvironment(); err == nil {
+			env := ParseShowEnvironment(b)
+			for k, v := range SessionEnvToImport(env, os.Getenv) {
+				if os.Setenv(k, v) == nil {
+					filled = append(filled, k)
+				}
+			}
+			if len(SessionEnvToImport(env, os.Getenv)) == 0 {
+				break
+			}
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(ImportPollInterval)
+	}
+	sort.Strings(filled)
+	return filled
 }
 
 // Run is the command seam for hyprctl and xrdb.  Keeping it here makes the

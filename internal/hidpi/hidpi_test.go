@@ -191,3 +191,95 @@ func TestUnitExecPath(t *testing.T) {
 		}
 	}
 }
+
+func TestParseShowEnvironment(t *testing.T) {
+	got := ParseShowEnvironment([]byte("DISPLAY=:0\nWAYLAND_DISPLAY=wayland-1\n-not-set\n\nGARBAGE\nEMPTY=\n"))
+	for k, want := range map[string]string{"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-1", "EMPTY": ""} {
+		if v, ok := got[k]; !ok || v != want {
+			t.Errorf("ParseShowEnvironment[%q] = %q,%v, want %q", k, v, ok, want)
+		}
+	}
+	// `-KEY` (an unassignment) and lines without '=' must not become keys.
+	for _, k := range []string{"-not-set", "GARBAGE", ""} {
+		if _, ok := got[k]; ok {
+			t.Errorf("ParseShowEnvironment invented key %q", k)
+		}
+	}
+}
+
+func TestSessionEnvToImport(t *testing.T) {
+	env := map[string]string{
+		"DISPLAY":                     ":0",
+		"HYPRLAND_INSTANCE_SIGNATURE": "sig",
+		"WAYLAND_DISPLAY":             "wayland-1",
+		"UNRELATED":                   "x",
+	}
+	cases := []struct {
+		name string
+		get  map[string]string
+		mgr  map[string]string // manager env; nil means the full env above
+		want map[string]string
+	}{
+		// the login unit: nothing inherited, everything imported
+		{"empty process env", map[string]string{}, nil, map[string]string{"DISPLAY": ":0", "HYPRLAND_INSTANCE_SIGNATURE": "sig", "WAYLAND_DISPLAY": "wayland-1"}},
+		// interactive run: nothing to do
+		{"already set", map[string]string{"DISPLAY": ":0", "HYPRLAND_INSTANCE_SIGNATURE": "sig", "WAYLAND_DISPLAY": "wayland-1"}, nil, map[string]string{}},
+		// partial: only what's missing is filled
+		{"half set", map[string]string{"DISPLAY": ":0"}, nil, map[string]string{"HYPRLAND_INSTANCE_SIGNATURE": "sig", "WAYLAND_DISPLAY": "wayland-1"}},
+		// pure Wayland host: manager has no DISPLAY to give
+		{"manager has nothing", map[string]string{}, map[string]string{}, map[string]string{}},
+	}
+	for _, c := range cases {
+		mgr := c.mgr
+		if mgr == nil {
+			mgr = env
+		}
+		got := SessionEnvToImport(mgr, func(k string) string { return c.get[k] })
+		if len(got) != len(c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+			continue
+		}
+		for k, v := range c.want {
+			if got[k] != v {
+				t.Errorf("%s: got[%q]=%q, want %q", c.name, k, got[k], v)
+			}
+		}
+	}
+}
+
+func TestToolkitScaleFactors(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want []string
+	}{
+		{"none", map[string]string{}, nil},
+		{"neutral values are not conflicts", map[string]string{"GDK_SCALE": "1", "GDK_DPI_SCALE": "1.0", "QT_SCALE_FACTOR": ""}, nil},
+		{"Omarchy monitor template ships GDK_SCALE=2", map[string]string{"GDK_SCALE": "2"}, []string{"GDK_SCALE=2"}},
+		{"Qt per-app factor counts too", map[string]string{"GDK_SCALE": "2", "QT_SCALE_FACTOR": "1.5"}, []string{"GDK_SCALE=2", "QT_SCALE_FACTOR=1.5"}},
+	}
+	for _, c := range cases {
+		got := ToolkitScaleFactors(func(k string) string { return c.env[k] })
+		if strings.Join(got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestToolkitScaleFactorsInSession: the guard must see the session, not just the
+// inherited env — the publisher unit's snapshot is frozen at start, and a bare
+// shell run carries none of Hyprland's hl.env values.
+func TestToolkitScaleFactorsInSession(t *testing.T) {
+	old := ShowEnvironment
+	t.Cleanup(func() { ShowEnvironment = old })
+	t.Setenv("GDK_SCALE", "")
+	ShowEnvironment = func() ([]byte, error) { return []byte("GDK_SCALE=2\n"), nil }
+	if got := ToolkitScaleFactorsInSession(); len(got) != 1 || got[0] != "GDK_SCALE=2" {
+		t.Errorf("must see GDK_SCALE from the manager, got %v", got)
+	}
+	// the process env wins when both know the key
+	t.Setenv("GDK_SCALE", "1")
+	if got := ToolkitScaleFactorsInSession(); len(got) != 0 {
+		t.Errorf("process env must win, got %v", got)
+	}
+}

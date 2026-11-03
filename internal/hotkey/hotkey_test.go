@@ -25,7 +25,7 @@ func TestEnsureTriggerMergePreservesOtherSections(t *testing.T) {
 		"0=Control+Shift_R",
 		"",
 		"[Hotkey/TriggerKeys]",
-		"0=Control+space",
+		"0=Alt+space",
 		"",
 		"[Hotkey/EnumerateBackwardKeys]",
 		"0=Control+Shift_L",
@@ -45,14 +45,20 @@ func TestEnsureTriggerMergePreservesOtherSections(t *testing.T) {
 	if !strings.Contains(out, "[Hotkey/EnumerateBackwardKeys]\n0=Control+Shift_L") {
 		t.Errorf("backward section clobbered:\n%s", out)
 	}
-	// trigger section rewritten (managed keys first, existing keys preserved)
-	if !strings.Contains(out, "[Hotkey/TriggerKeys]\n0=Alt+space\n1=Control+space") {
+	// trigger section rewritten: the managed key takes the slot, the old
+	// Alt+space (window-menu chord) is pruned.
+	if !strings.Contains(out, "[Hotkey/TriggerKeys]\n0=Control+space\n") {
 		t.Errorf("trigger section wrong:\n%s", out)
+	}
+	for _, pruned := range PruneKeys {
+		if strings.Contains(strings.ToLower(out), strings.ToLower(pruned)) {
+			t.Errorf("%s must be pruned:\n%s", pruned, out)
+		}
 	}
 }
 
 func TestEnsureTriggerSkipWhenEqual(t *testing.T) {
-	in := "[Hotkey/TriggerKeys]\n0=Alt+space\n1=Control+Shift_L\n"
+	in := "[Hotkey/TriggerKeys]\n0=Control+space\n1=Control+Shift_L\n"
 	out, changed, err := EnsureTrigger(in, DefaultKeys)
 	if err != nil {
 		t.Fatal(err)
@@ -85,10 +91,12 @@ func TestEnsureTriggerRejectsBareShift(t *testing.T) {
 	}
 }
 
-// TestEnsureTriggerPreservesUserKeys (评审 P2-5): the user's extra trigger
-// keys must survive convergence — convergence adds, never removes.
+// TestEnsureTriggerPreservesUserKeys: the user's extra trigger keys must
+// survive convergence, EXCEPT a pruned one — convergence adds its managed key
+// and drops the legacy chord, so a hand-tuned host reaches the same terminal
+// state as a fresh one.
 func TestEnsureTriggerPreservesUserKeys(t *testing.T) {
-	in := "[Hotkey/TriggerKeys]\n0=Control+space\n1=Super+space\n"
+	in := "[Hotkey/TriggerKeys]\n0=Alt+space\n1=Super+space\n"
 	out, changed, err := EnsureTrigger(in, DefaultKeys)
 	if err != nil {
 		t.Fatal(err)
@@ -96,10 +104,16 @@ func TestEnsureTriggerPreservesUserKeys(t *testing.T) {
 	if !changed {
 		t.Fatal("managed keys missing, must change")
 	}
-	// managed keys take the priority slots, user keys follow
-	for _, want := range []string{"0=Alt+space", "1=Control+space", "2=Super+space"} {
+	// the managed key takes the priority slot, the pruned legacy key is gone,
+	// so the user's Super+space follows it.
+	for _, want := range []string{"0=Control+space", "1=Super+space"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("merged section missing %q:\n%s", want, out)
+		}
+	}
+	for _, pruned := range PruneKeys {
+		if strings.Contains(strings.ToLower(out), strings.ToLower(pruned)) {
+			t.Errorf("%s must be pruned even if the user had it:\n%s", pruned, out)
 		}
 	}
 	// second run: converged (contains managed keys) → no churn
@@ -114,7 +128,15 @@ func TestEnsureTriggerPreservesUserKeys(t *testing.T) {
 	if !HasTrigger(out, DefaultKeys) {
 		t.Error("HasTrigger must pass with extra user keys present")
 	}
-	if HasTrigger("[Hotkey/TriggerKeys]\n0=Control+space\n", DefaultKeys) {
+	if HasTrigger("[Hotkey/TriggerKeys]\n0=Super+space\n", DefaultKeys) {
 		t.Error("HasTrigger must fail when managed keys are missing")
+	}
+	// a pruned chord that is still bound means "not converged"
+	if HasTrigger("[Hotkey/TriggerKeys]\n0=Control+space\n1=Alt+space\n", DefaultKeys) {
+		t.Error("HasTrigger must fail while a pruned key is still bound")
+	}
+	// case/spelling insensitive (Ctrl alias + lower-case key names)
+	if HasTrigger("[Hotkey/TriggerKeys]\n0=ALT+SPACE\n1=Ctrl+space\n", DefaultKeys) {
+		t.Error("HasTrigger must normalise Ctrl/Control and case, and reject a bound pruned key")
 	}
 }

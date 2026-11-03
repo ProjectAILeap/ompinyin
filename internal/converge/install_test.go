@@ -46,6 +46,14 @@ var factsOctagramProbeProd = facts.OctagramProbe
 // hidpiRunProd preserves the production hyprctl/xrdb runner across tests.
 var hidpiRunProd = hidpi.Run
 
+// hidpiImportTimeoutProd preserves the production env-import budget: the login
+// publisher may legitimately poll for DISPLAY, but no T0 test should pay 10s.
+var hidpiImportTimeoutProd = hidpi.ImportTimeout
+
+// hidpiShowEnvironmentProd preserves the production `systemctl --user
+// show-environment` seam, which the fixtures replace with a quiet stub.
+var hidpiShowEnvironmentProd = hidpi.ShowEnvironment
+
 // serviceFcitxRunningProd preserves the production stray-instance probe: the
 // fixtures stub it so T0 never shells out to the real pgrep.
 var serviceFcitxRunningProd = service.FcitxRunning
@@ -150,6 +158,12 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 	// fake hyprctl + xrdb: focused monitor scale=2 (→ Xft.dpi 192); `xrdb -query`
 	// echoes the last merged file, so the published-value diff is observable.
 	// Omarchy ships xwayland force_zero_scaling=true (X11 apps self-scale).
+	//
+	// The session-environment import is stubbed to "the manager knows nothing":
+	// that matches these fixtures (they never set DISPLAY) and makes the poll exit
+	// on its first iteration instead of sleeping out the production budget.
+	hidpi.ImportTimeout = 0
+	hidpi.ShowEnvironment = func() ([]byte, error) { return nil, nil }
 	hidpi.Run = func(name string, args ...string) ([]byte, error) {
 		switch {
 		case name == "hyprctl" && len(args) >= 1 && args[0] == "getoption":
@@ -263,6 +277,8 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 		deploy.Run = nil
 		deploy.CompileSchemas = nil
 		hidpi.Run = hidpiRunProd
+		hidpi.ImportTimeout = hidpiImportTimeoutProd
+		hidpi.ShowEnvironment = hidpiShowEnvironmentProd
 		tray.ShellRunning = nil
 		tray.Run = nil
 		theme.Run = nil
@@ -354,7 +370,7 @@ func TestInstallConvergesDefaultTerminalState(t *testing.T) {
 	}
 	// L4 hotkeys with whitelist keysyms
 	cb, _ := os.ReadFile(observe.ConfigPath())
-	if !strings.Contains(string(cb), "0=Alt+space") || strings.Contains(string(cb), "1=Control+Shift_L") {
+	if !strings.Contains(string(cb), "0=Control+space") || strings.Contains(string(cb), "1=Control+Shift_L") {
 		t.Errorf("hotkey config wrong:\n%s", cb)
 	}
 	// L4 drop-in removes --disable notificationitem (dedicated filename)
@@ -1638,5 +1654,76 @@ func TestUninstallBacksUpBeforeDeleting(t *testing.T) {
 	}
 	if !foundManaged {
 		t.Error("managed files were not backed up before removal")
+	}
+}
+
+// TestApplyX11HiDPIResolvesSessionEnvFromManager pins the login-time root cause
+// (thinkbook-omarchy, 2026-11-03): the publisher unit is pulled in by
+// graphical-session.target, which on uwsm/Omarchy is reached seconds before the
+// compositor imports DISPLAY into the systemd user manager. systemd freezes the
+// unit's environment at start, so the unit runs with no DISPLAY, `xrdb -query`
+// fails with "Can't open display ”", and the publish used to be skipped for the
+// whole session (the path unit only watches monitors.lua). The value must come
+// from the manager, not from inheritance.
+func TestApplyX11HiDPIResolvesSessionEnvFromManager(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	seedCache(t, home)
+
+	opts, _ := newTestOpts()
+	d := catalog.DefaultDesired()
+	d.X11HiDPI = true
+	if code := Install(d, false, opts); code != ExitOK {
+		t.Fatalf("opt-in install exit=%d", code)
+	}
+
+	// Now make the process look exactly like the login unit: no session env, and
+	// an X server that is only reachable once DISPLAY has been resolved.
+	t.Setenv("DISPLAY", "")
+	t.Setenv("HYPRLAND_INSTANCE_SIGNATURE", "")
+	h.xrdb = nil
+	hidpi.ShowEnvironment = func() ([]byte, error) {
+		return []byte("DISPLAY=:7\nHYPRLAND_INSTANCE_SIGNATURE=sig7\n"), nil
+	}
+	hidpi.Run = func(name string, args ...string) ([]byte, error) {
+		switch {
+		case name == "systemctl":
+			return nil, nil
+		case name == "hyprctl" && len(args) >= 1 && args[0] == "getoption":
+			if os.Getenv("HYPRLAND_INSTANCE_SIGNATURE") == "" {
+				return nil, errors.New("HYPRLAND_INSTANCE_SIGNATURE not set!")
+			}
+			return []byte("bool: true\nset: true\n"), nil
+		case name == "hyprctl":
+			return []byte(`[{"focused":true,"scale":2}]`), nil
+		case name == "xrdb" && len(args) >= 1 && args[0] == "-query":
+			if os.Getenv("DISPLAY") == "" {
+				return nil, errors.New(`xrdb: Can't open display ''`)
+			}
+			return h.xrdb, nil
+		case name == "xrdb" && len(args) == 2 && args[0] == "-merge":
+			if b, err := os.ReadFile(args[1]); err == nil {
+				h.xrdb = b
+			}
+			return nil, nil
+		}
+		return nil, nil
+	}
+
+	opts2, out2 := newTestOpts()
+	if code := ApplyX11HiDPI(opts2); code != ExitOK {
+		t.Fatalf("ApplyX11HiDPI exit=%d\n%s", code, out2.String())
+	}
+	if got := os.Getenv("DISPLAY"); got != ":7" {
+		t.Errorf("DISPLAY=%q, want :7 imported from the manager", got)
+	}
+	if got := os.Getenv("HYPRLAND_INSTANCE_SIGNATURE"); got != "sig7" {
+		t.Errorf("HYPRLAND_INSTANCE_SIGNATURE=%q, want sig7 (hyprctl needs it)", got)
+	}
+	if !bytes.Contains(h.xrdb, []byte("Xft.dpi: 192")) {
+		t.Errorf("must publish Xft.dpi=192 once DISPLAY is resolved, got %q", h.xrdb)
+	}
+	if !strings.Contains(out2.String(), "补全会话环境") {
+		t.Errorf("the import must be reported, not silent:\n%s", out2.String())
 	}
 }

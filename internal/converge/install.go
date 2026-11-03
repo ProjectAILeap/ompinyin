@@ -163,7 +163,7 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 	}
 	herdr := "未检测到"
 	if pc.HerdrPrefix {
-		herdr = "已检测到（触发键已避让 Ctrl+Space 前缀）"
+		herdr = "已检测到（其前缀需与触发键分开）"
 	}
 	opts.outf("[完成] 预检：ID=%s BUILD_ID=%s 磁盘空闲 %d MiB octagram ok herdr %s",
 		pc.OS.ID, pc.OS.BuildID, pc.DiskFree>>20, herdr)
@@ -425,7 +425,8 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 	} else if len(removed) > 0 {
 		opts.outf("[完成] 已清理 %d 个旧备份（保留最近 %d 个）", len(removed), state.LedgerKeepBackups)
 	}
-	opts.outf("[完成] 终态收敛完成；F4 切方案，触发键切中英（Alt+Space）")
+	opts.outf("[完成] 终态收敛完成；%s 切方案，%s 开/停用输入法，Shift 切中英（rime 内）",
+		strings.Join(catalog.SwitcherHotkeys, " / "), strings.Join(hotkey.DefaultKeys, " / "))
 	return ExitOK
 }
 
@@ -597,8 +598,16 @@ func writeHidpi(opts Options, backupDir string, cur *observe.Current) error {
 	// An unreachable X session is a legitimate no-op (pure Wayland), so probe
 	// first and only treat a merge failure as fatal when the server IS there.
 	if _, qerr := hidpi.Run("xrdb", "-query"); qerr != nil {
-		opts.outf("[跳过] L4 X11 HiDPI：未检测到可用的 X 会话（无 XWayland 或 DISPLAY 不可达）；已安装登录/缩放监听，下次登录发布")
+		// Name the real cause instead of guessing between two of them: an
+		// unreachable X server and a process without DISPLAY look identical here,
+		// and the second one is what the login unit actually hits (§6.7).
+		opts.outf("[跳过] L4 X11 HiDPI：xrdb -query 失败（%v；DISPLAY=%q）；受管文件与监听已就位，登录/缩放变化时重试", qerr, os.Getenv("DISPLAY"))
 		return nil
+	}
+	// Surface the one rule the mode cannot enforce itself (§6.7): an explicit
+	// toolkit factor plus Xft.dpi multiplies in every client that reads both.
+	if f := hidpi.ToolkitScaleFactorsInSession(); len(f) > 0 {
+		opts.outf("[警告] L4 X11 HiDPI：会话里已有显式缩放因子 %s；读 Xft.dpi 的 X11 客户端（GTK3/Qt5）会与它叠加（如 GTK3 约 4×），确认目标应用不受影响或先移除该因子", strings.Join(f, " "))
 	}
 	if _, err := hidpi.Run("xrdb", "-merge", xres); err != nil {
 		return fmt.Errorf("xrdb -merge: %w", err)
@@ -738,8 +747,13 @@ func undoHidpi(opts Options, backupDir string) int {
 // by the opt-in path, but a stale enable link (or a manual re-enable) must not
 // start publishing a global resource behind the user's back.
 func ApplyX11HiDPI(opts Options) (code int) {
+	// Resolve the session environment BEFORE taking the lock: the poll may wait up
+	// to 10s for the manager to learn DISPLAY, and holding the state lock that
+	// long would make a concurrent `install` fail to acquire it.
+	imported := hidpi.ImportSessionEnv()
+
 	// The path unit can fire while `ompinyin install` is mid-run. Taking the
-	// same lock prevents two concurrent fcitx5 stop windows (AGENTS 关键陷阱 #1:
+	// same lock prevents two concurrent fcitx5 stop windows (docs/dev-notes.md D1:
 	// one stop window, always). Contention is not an error for a background
 	// hook — skip and let the next scale change / login retry.
 	lock, err := state.Acquire()
@@ -762,7 +776,20 @@ func ApplyX11HiDPI(opts Options) (code int) {
 		opts.outf("[跳过] X11 HiDPI 未处于 opt-in 状态（--no-x11-hidpi 已撤销；不发布全局 Xft.dpi）")
 		return ExitOK
 	}
+	// systemd freezes a unit's environment at start, and at login that snapshot
+	// predates the manager learning DISPLAY (hidpi.ImportSessionEnv explains the
+	// timeline). Resolved above, before the lock; without it the login publish
+	// would be skipped for the whole session.
+	if len(imported) > 0 {
+		opts.outf("[完成] X11 HiDPI：从 systemd 用户管理器补全会话环境 %s（单元自带的登录快照里没有它）", strings.Join(imported, " "))
+	}
 	cur := observe.Collect(d, st)
+	// An unreadable hyprctl is how the login unit starts (no
+	// HYPRLAND_INSTANCE_SIGNATURE in its snapshot); observe then falls back to
+	// Omarchy's default. Say so, or the §16-27 precondition looks checked.
+	if !cur.X11ScalingKnown {
+		opts.outf("[警告] X11 HiDPI：读不到 hyprctl 的 xwayland:force_zero_scaling，按 Omarchy 默认 true 继续（未验证）；若实际为 false，发布会二次放大 X11 应用")
+	}
 	if !cur.X11ForceZeroScaling {
 		opts.outf("[跳过] X11 HiDPI：Hyprland force_zero_scaling=false（合成器已在缩放 X11 窗口），不发布 Xft.dpi")
 		return ExitOK
@@ -997,6 +1024,15 @@ func writeHotkey(opts Options, backupDir string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	// Another tool may already own the chord (herdr ships ctrl+space on Omarchy).
+	// We neither edit its config nor silently pick a different key: say it out
+	// loud, once, at the moment we write ours.
+	if prefix, extras := observe.HerdrPrefix(state.Home()); prefix != "" || len(extras) > 0 {
+		if clash := observe.HerdrConflict(prefix, extras, hotkey.DefaultKeys); clash != "" {
+			opts.outf("[警告] 触发键 %s 同时是 herdr 的前缀（%s）：herdr 会先截获它，输入法定时收不到。把 herdr 的 [keys] prefix 改成 ctrl+b 即可",
+				strings.Join(hotkey.DefaultKeys, " / "), clash)
+		}
+	}
 	newContent, changed, err := hotkey.EnsureTrigger(string(b), hotkey.DefaultKeys)
 	if err != nil {
 		return err
@@ -1063,7 +1099,7 @@ func traySet(opts Options, backupDir string) int {
 // reads these files on reload, no restart needed.
 func themeApply(opts Options, backupDir string, st *state.State) int {
 	home := state.Home()
-	confContent := theme.ConfContent(theme.CurrentFont())
+	confContent := theme.ConfContent(theme.ReadConfContent(home), theme.CurrentFont())
 	hookContent := theme.HookContent()
 
 	// converged already: skip (also keeps a reconverged re-run a true no-op)

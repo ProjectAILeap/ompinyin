@@ -117,11 +117,21 @@ var CurrentFont = func() string {
 }
 
 // ConfContent renders the managed classicui.conf (whole file).
-func ConfContent(font string) string {
+// ManagedConfKeys are the only classicui.conf keys ompinyin owns. Everything
+// else in that file belongs to the user: classicui.conf is a flat INI, so a
+// whole-file write used to silently drop TrayFont / PerScreenDPI /
+// EnableFractionalScale / VerticalCandidateList (they existed in the pre-ompinyin
+// backup). Ownership is key-scoped, like ~/.Xresources is line-scoped (§5.1).
+var ManagedConfKeys = []string{"Theme", "DarkTheme", "UseDarkTheme", "UseAccentColor", "Font", "MenuFont"}
+
+// ConfContent renders the managed classicui.conf: managed header + managed
+// keys, then every unmanaged `Key=Value` line of existing, in file order.
+// Idempotent: feeding the output back yields the same bytes.
+func ConfContent(existing, font string) string {
 	if font == "" {
 		font = DefaultFont
 	}
-	return strings.Join([]string{
+	lines := []string{
 		catalog.ManagedHeader(),
 		"# fcitx5 candidate window follows the current Omarchy theme",
 		"Theme=" + ThemeName,
@@ -130,8 +140,38 @@ func ConfContent(font string) string {
 		"UseAccentColor=False",
 		"Font=" + font + " 12",
 		"MenuFont=" + font + " 11",
-		"",
-	}, "\n")
+	}
+	for _, line := range strings.Split(existing, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		key, _, ok := strings.Cut(t, "=")
+		if !ok || isManagedConfKey(strings.TrimSpace(key)) {
+			continue
+		}
+		lines = append(lines, t)
+	}
+	return strings.Join(append(lines, ""), "\n")
+}
+
+func isManagedConfKey(key string) bool {
+	for _, k := range ManagedConfKeys {
+		if strings.EqualFold(k, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// ReadConfContent returns the current classicui.conf ("" when absent), for the
+// merge. Failures are reported as empty so convergence still writes ours.
+func ReadConfContent(home string) string {
+	b, err := os.ReadFile(ConfPath(home))
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // HookContent renders the managed theme-set hook (whole file). It regenerates
@@ -164,7 +204,7 @@ func Observe(home string, st *state.State) Observed {
 		o.ConfOK = strings.Contains(s, catalog.ManagedHeader()) &&
 			strings.Contains(s, "Theme="+ThemeName) &&
 			strings.Contains(s, "UseDarkTheme=False")
-		o.ConfEqual = s == ConfContent(CurrentFont())
+		o.ConfEqual = s == ConfContent(s, CurrentFont())
 	}
 	if b, err := os.ReadFile(HookPath(home)); err == nil {
 		s := string(b)

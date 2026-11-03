@@ -98,6 +98,24 @@ got=$(sha256sum "$scratch" | awk '{print $1}')
 [ -z "$(find "$(dirname "$scratch")" -name '.*.new' -print -quit)" ] || die "staging litter left next to the binary"
 ok "update --self replaced the binary across filesystems (0.0.1 → v$latest, sha256 verified)"
 
+# `update --self` converges BEFORE upgrading, and the X11 publisher unit bakes
+# the RUNNING binary's path (os.Executable) into ExecStart (§6.7). Run from the
+# scratch path, that rewrites the unit to point inside $work — which the trap
+# below deletes, leaving a watcher that cannot exec and a login publish that
+# fails silently. Re-converge with the installed binary (the one users run) and
+# assert the unit is back on a path that exists.
+UNITFILE="$HOME/.config/systemd/user/ompinyin-x11-hidpi.service"
+must "restore the publisher unit" ompinyin install -y
+if grep -qF "$work" "$UNITFILE" 2>/dev/null; then
+  die "publisher unit still points into the scratch dir: $(grep ExecStart= "$UNITFILE")"
+fi
+if [ -f "$UNITFILE" ]; then
+  exec_path=$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$UNITFILE" | head -1)
+  [ -x "$exec_path" ] || die "publisher ExecStart is not executable: $exec_path"
+fi
+must "doctor (after --self)" ompinyin doctor
+ok "publisher unit restored to $exec_path; doctor still clean"
+
 # ---------------------------------------------------------------- manual items
 cat <<'EOF'
   still manual (§15): F4 schema switch, Alt+Space tri-state, top-bar icon visible,

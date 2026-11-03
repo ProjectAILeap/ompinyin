@@ -87,6 +87,7 @@ func TestGrammarPatchGolden(t *testing.T) {
 		"    rear_penalty: -20",
 		"  translator/contextual_suggestions: false",
 		"  translator/max_homophones: 8",
+		"  switches/@4/reset: 0",
 		"",
 	}, "\n")
 	if got != want {
@@ -96,7 +97,18 @@ func TestGrammarPatchGolden(t *testing.T) {
 
 func TestDefaultPatchGolden(t *testing.T) {
 	got := DefaultPatch([]string{"rime_ice", "double_pinyin"})
-	want := ManagedHeader() + "\npatch:\n  schema_list:\n    - schema: rime_ice\n    - schema: double_pinyin\n  menu/page_size: 9\n  key_binder/bindings/+:\n    - accept: comma\n      send: Page_Up\n      when: has_menu\n    - accept: period\n      send: Page_Down\n      when: has_menu\n"
+	want := ManagedHeader() + "\npatch:\n  schema_list:\n    - schema: rime_ice\n    - schema: double_pinyin\n" +
+		"  menu/page_size: 9\n" +
+		"  key_binder/bindings/+:\n" +
+		"    - accept: comma\n      send: Page_Up\n      when: has_menu\n" +
+		"    - accept: period\n      send: Page_Down\n      when: has_menu\n" +
+		"  ascii_composer/good_old_caps_lock: true\n" +
+		"  ascii_composer/switch_key/Shift_L: commit_code\n" +
+		"  ascii_composer/switch_key/Shift_R: commit_code\n" +
+		"  ascii_composer/switch_key/Control_L: noop\n" +
+		"  ascii_composer/switch_key/Control_R: noop\n" +
+		"  switcher/hotkeys: [F4]\n" +
+		"  switcher/save_options: [ascii_punct, traditionalization, emoji, search_single_char]\n"
 	if got != want {
 		t.Errorf("default patch mismatch:\ngot:\n%s\nwant:\n%s", got, want)
 	}

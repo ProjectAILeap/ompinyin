@@ -111,7 +111,15 @@ func findSection(sections []*Section, name string) *Section {
 	return nil
 }
 
-// DefaultProfile renders a fresh profile with keyboard-us + rime.
+// DefaultProfile renders a fresh profile with rime as the ONLY item.
+//
+// keyboard-us is deliberately absent: 中英切换 is rime's own business
+// (`ascii_composer.switch_key`, shipped as a managed 手感项), and a second IM
+// adds nothing but an Alt+Space stop that types through the XKB layout instead.
+// Keeping the fresh profile identical to a converged one also makes "what does
+// a fresh host get" answerable from this function alone — the old version
+// created keyboard-us here but never on an existing profile (EnsureRime only
+// adds, never removes), so no two hosts agreed.
 func DefaultProfile() string {
 	return Render([]*Section{
 		{Name: "Groups/0", Keys: [][2]string{
@@ -120,10 +128,6 @@ func DefaultProfile() string {
 			{"DefaultIM", "rime"},
 		}},
 		{Name: "Groups/0/Items/0", Keys: [][2]string{
-			{"Name", "keyboard-us"},
-			{"Layout", ""},
-		}},
-		{Name: "Groups/0/Items/1", Keys: [][2]string{
 			{"Name", "rime"},
 			{"Layout", ""},
 		}},

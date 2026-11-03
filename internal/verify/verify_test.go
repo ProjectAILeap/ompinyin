@@ -370,3 +370,63 @@ func TestServiceDownDetail(t *testing.T) {
 		t.Errorf("plain detail must name the unit and reset-failed: %q", plain)
 	}
 }
+
+// TestX11ToolkitNote: the doctor line must name a stacking toolkit factor, or
+// §6.7's "一个框架只能有一个缩放权" never reaches the read-only path (Omarchy's
+// monitors.lua ships GDK_SCALE=2 by default).
+func TestX11ToolkitNote(t *testing.T) {
+	c := &observe.Current{}
+	if got := c.X11ToolkitNote(); got != "" {
+		t.Errorf("no factors must stay silent, got %q", got)
+	}
+	c.X11ToolkitFactors = []string{"GDK_SCALE=2"}
+	got := c.X11ToolkitNote()
+	for _, want := range []string{"GDK_SCALE=2", "4×"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("note %q missing %q", got, want)
+		}
+	}
+}
+
+func TestSwitchNames(t *testing.T) {
+	b := []byte("schema: rime_ice\nswitches:\n  - name: ascii_mode\n    states: [中, Ａ]\n  - name: ascii_punct\n  - name: full_shape\n    reset: 0\nengine:\n  processors:\n    - name: should_not_count\n")
+	got := switchNames(b)
+	want := []string{"ascii_mode", "ascii_punct", "full_shape"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("switchNames = %v, want %v", got, want)
+	}
+}
+
+// TestCheckFullShapeIndex: the full_shape reset is patched by INDEX. If upstream
+// reorders the switches, the patch silently resets a different switch, so the
+// doctor must read the compiled schema instead of trusting the constant.
+func TestCheckFullShapeIndex(t *testing.T) {
+	const good = "switches:\n  - name: ascii_mode\n  - name: ascii_punct\n  - name: traditionalization\n  - name: emoji\n  - name: full_shape\n  - name: search_single_char\n"
+	cases := []struct {
+		name  string
+		body  string
+		write bool
+		ok    bool
+	}{
+		{"index points at full_shape", good, true, true},
+		{"upstream reordered", "switches:\n  - name: ascii_mode\n  - name: full_shape\n", true, false},
+		{"not compiled yet is not a failure", "", false, true},
+	}
+	for _, c := range cases {
+		rimeDir := t.TempDir()
+		if c.write {
+			dir := filepath.Join(rimeDir, "build")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "rime_ice.schema.yaml"), []byte(c.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		d := catalog.Desired{Primary: "quanpin", Channel: "stable"}
+		got := checkFullShapeIndex(d, &observe.Current{RimeDir: rimeDir})
+		if got.OK != c.ok {
+			t.Errorf("%s: OK=%v want %v (detail: %s)", c.name, got.OK, c.ok, got.Detail)
+		}
+	}
+}

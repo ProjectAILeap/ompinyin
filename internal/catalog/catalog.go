@@ -23,7 +23,7 @@ var Version = "1.0.0"
 // ManagedFormat is the version of the MANAGED FILE FORMAT, and the only thing
 // stamped into owned files. Bump it when the generated content changes shape,
 // so existing hosts converge to the new bytes exactly once.
-const ManagedFormat = "1.0.0"
+const ManagedFormat = "1.2.0"
 
 // ManagedHeader is the first line of every file ompinyin owns.
 func ManagedHeader() string {
@@ -179,6 +179,11 @@ func GrammarPatch() string {
 	fmt.Fprintf(&b, "    rear_penalty: %d\n", GrammarRearPenalty)
 	fmt.Fprintf(&b, "  translator/contextual_suggestions: %v\n", GrammarContextualSuggestions)
 	fmt.Fprintf(&b, "  translator/max_homophones: %d\n", GrammarMaxHomophones)
+	// 手感：全半角永远从半角起步（§5.4）。`switches` 定义在每个 schema 里，
+	// default.custom.yaml 打不到它，所以只能写在这里。它与 DefaultPatch 的
+	// `switcher/save_options`（不含 full_shape）是一对：rime 规定「要记忆的
+	// 开关不能设 reset」，两者必须同时存在，否则 full_shape 会被跨会话记住。
+	fmt.Fprintf(&b, "  switches/@%d/reset: 0\n", FullShapeSwitchIndex)
 	return b.String()
 }
 
@@ -209,6 +214,28 @@ const (
 // known-good feel, §5.4).
 const DefaultPageSize = 9
 
+// 受管手感项（§5.4）。中英切换由 rime 引擎的 ascii_composer 完成，与 fcitx5
+// 的 IM 列表无关：左右 Shift 都「先把已打编码上屏，再切到 ascii_mode」。
+const FeelSwitchKey = "commit_code"
+
+// FullShapeSwitchIndex 是各 rime-ice 方案 `switches` 列表里 full_shape 的下标
+// （ascii_mode/ascii_punct/traditionalization/emoji/full_shape/search_single_char）。
+// rime patch 只能按下标选列表项，所以上游一旦重排开关，这个补丁就会打到别人身上
+// —— verify 会读编译产物断言该下标仍是 full_shape，不符就报出来。
+const FullShapeSwitchIndex = 4
+
+// SwitcherHotkeys 是 rime「方案选单」的呼出键，只留 F4。
+//
+// 上游 rime-ice 一次绑了 F4 / Control+grave / Control+Shift+grave 三个键做同一件
+// 事，而 Control+grave 与 VS Code 的终端开关、JetBrains 的 Quick switch scheme
+// 直接冲突——误触一次就多开一个终端。Alt+space 留给 fcitx5 的 IM 开关（§2.3），
+// 不再兼任方案选单。
+var SwitcherHotkeys = []string{"F4"}
+
+// RememberedSwitches 是跨会话记忆的开关；full_shape 被故意排除，配合
+// switches/@4/reset 让全角永远从半角起步（全角曾导致锁屏密码输成全角而进不去）。
+var RememberedSwitches = []string{"ascii_punct", "traditionalization", "emoji", "search_single_char"}
+
 // DefaultPatch renders the managed default.custom.yaml: the schema_list
 // (map-form, §5.1) plus the two managed "feel" settings — the candidate count
 // and `,.` paging (§5.4). The schema_list MUST use the `- schema: <id>` map
@@ -230,6 +257,18 @@ func DefaultPatch(schemaList []string) string {
 	b.WriteString("    - accept: period\n")
 	b.WriteString("      send: Page_Down\n")
 	b.WriteString("      when: has_menu\n")
+	// §5.4 managed feel: 中英切换（左右 Shift 都上屏编码再切）、CapsLock 只切
+	// 大写、Ctrl 尾随不误切，以及「全半角不跨会话记忆」（与 GrammarPatch 的
+	// switches/@4/reset 配对）。
+	b.WriteString("  ascii_composer/good_old_caps_lock: true\n")
+	for _, k := range []string{"Shift_L", "Shift_R"} {
+		b.WriteString("  ascii_composer/switch_key/" + k + ": " + FeelSwitchKey + "\n")
+	}
+	for _, k := range []string{"Control_L", "Control_R"} {
+		b.WriteString("  ascii_composer/switch_key/" + k + ": noop\n")
+	}
+	b.WriteString("  switcher/hotkeys: [" + strings.Join(SwitcherHotkeys, ", ") + "]\n")
+	b.WriteString("  switcher/save_options: [" + strings.Join(RememberedSwitches, ", ") + "]\n")
 	return b.String()
 }
 

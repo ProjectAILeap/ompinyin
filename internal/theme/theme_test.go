@@ -16,7 +16,7 @@ import (
 // font baked in and the accent-portal path disabled (the generated theme
 // carries the colors, so follow-system-accent would fight the hook).
 func TestConfContentShape(t *testing.T) {
-	s := ConfContent("JetBrainsMono Nerd Font")
+	s := ConfContent("", "JetBrainsMono Nerd Font")
 	for _, want := range []string{
 		catalog.ManagedHeader(),
 		"Theme=omarchy",
@@ -69,7 +69,7 @@ func TestObserveTransitions(t *testing.T) {
 
 	// converge the files by hand (what themeApply writes)
 	for rel, content := range map[string]string{
-		ConfRelPath: ConfContent("TestFont"),
+		ConfRelPath: ConfContent("", "TestFont"),
 		HookRelPath: HookContent(),
 	} {
 		abs := filepath.Join(home, filepath.FromSlash(rel))
@@ -106,5 +106,45 @@ func TestObserveTransitions(t *testing.T) {
 	}
 	if got := patches.Classify(HookPath(home), st.ManagedFiles[HookRelPath]); got != patches.StatusManaged {
 		t.Errorf("untouched hook classified as %v, want managed", got)
+	}
+}
+
+// TestConfContentPreservesUnmanagedKeys: classicui.conf ownership is KEY-scoped.
+// The old whole-file write silently dropped TrayFont / PerScreenDPI /
+// EnableFractionalScale / VerticalCandidateList (all present in the
+// pre-ompinyin backup), so a user who tuned them lost them on every converge.
+func TestConfContentPreservesUnmanagedKeys(t *testing.T) {
+	existing := strings.Join([]string{
+		"# managed by ompinyin v1.0.0 — hand edits will be overwritten",
+		"Theme=installer-dark",
+		"Font=Old Font 9",
+		"TrayFont=Sans Bold 10",
+		"PerScreenDPI=True",
+		"UseDarkTheme=False",
+		"",
+	}, "\n")
+	out := ConfContent(existing, "TestFont")
+
+	for _, want := range []string{"TrayFont=Sans Bold 10", "PerScreenDPI=True"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("unmanaged key %q was dropped:\n%s", want, out)
+		}
+	}
+	// managed keys always come from ompinyin, wherever the user put them
+	for _, want := range []string{"Theme=omarchy", "Font=TestFont 12", "MenuFont=TestFont 11"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("managed key %q missing:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "installer-dark") || strings.Contains(out, "Old Font") {
+		t.Errorf("managed keys must be overwritten:\n%s", out)
+	}
+	// preserved keys are not duplicated by the managed block
+	if strings.Count(out, "UseDarkTheme=") != 1 {
+		t.Errorf("UseDarkTheme duplicated:\n%s", out)
+	}
+	// idempotent: merging the output again is a no-op
+	if again := ConfContent(out, "TestFont"); again != out {
+		t.Errorf("not idempotent:\nfirst:\n%s\nsecond:\n%s", out, again)
 	}
 }

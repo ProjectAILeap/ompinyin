@@ -64,6 +64,12 @@ type Current struct {
 
 	ProfileHasRime bool
 	HotkeyOK       bool
+	// HerdrPrefix is herdr's own prefix chord ("" when herdr is not configured
+	// here); HerdrPrefixConflict names the chord both tools want. herdr grabs
+	// its prefix before the application sees it, so a shared chord would only
+	// reach fcitx5 outside herdr — a warning, never a convergence failure.
+	HerdrPrefix         string
+	HerdrPrefixConflict string
 	// DropInExists is the file presence; DropInOK additionally requires the
 	// content to really enable notificationitem for the DISCOVERED unit.
 	DropInExists bool
@@ -116,6 +122,11 @@ type Current struct {
 	// scales X11, so publishing Xft.dpi would double-scale everything.
 	X11ForceZeroScaling bool
 	X11ScalingKnown     bool // force_zero_scaling was actually read (vs defaulted true)
+	// X11ToolkitFactors are the explicit toolkit scale factors in the session
+	// (GDK_SCALE, …). Publishing Xft.dpi next to one of them makes every client
+	// that reads both multiply — §6.7's "一个框架只能有一个缩放权". Diagnostics
+	// only: ompinyin never edits Hyprland's env.
+	X11ToolkitFactors []string
 }
 
 // Collect probes the host. Best-effort: probe errors are surfaced as
@@ -176,6 +187,10 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 	if b, err := os.ReadFile(ConfigPath()); err == nil {
 		c.HotkeyOK = hotkey.HasTrigger(string(b), hotkey.DefaultKeys)
 	}
+	// Cross-tool check (§6.2): another program may already own the chord.
+	prefix, extras := HerdrPrefix(state.Home())
+	c.HerdrPrefix = prefix
+	c.HerdrPrefixConflict = HerdrConflict(prefix, extras, hotkey.DefaultKeys)
 	c.DropInPath = tray.DropInPath(state.Home(), c.Unit)
 	if b, err := os.ReadFile(c.DropInPath); err == nil {
 		c.DropInExists = true
@@ -213,6 +228,7 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 	if merged, _ := hidpi.MergeXresources(string(xr), c.X11DPIDesired); string(xr) == merged {
 		c.X11ConfigOK = true
 	}
+	c.X11ToolkitFactors = hidpi.ToolkitScaleFactorsInSession()
 	c.X11ManagedPresent = hidpi.ManagedBlockPresent(string(xr))
 	c.X11ForeignDPI = hidpi.HasForeignXftDPI(string(xr))
 	// Hyprland's force_zero_scaling decides whether the compositor already
@@ -274,6 +290,17 @@ func (c *Current) X11ForeignNote() string {
 	return "；注意：~/.Xresources 存在块外 Xft.dpi 行（xrdb 按文件顺序、后者胜，冲突时以实际值为准）"
 }
 
+// X11ToolkitNote warns when the session carries an explicit toolkit scale
+// factor, which Xft.dpi would multiply (§6.7). Omarchy's own monitors.lua ships
+// GDK_SCALE=2, so this is the common case, not an exotic one.
+func (c *Current) X11ToolkitNote() string {
+	if len(c.X11ToolkitFactors) == 0 {
+		return ""
+	}
+	return "；⚠ 会话里已有显式缩放因子 " + strings.Join(c.X11ToolkitFactors, " ") +
+		"，读 Xft.dpi 的 X11 客户端（GTK3/Qt5）会与它叠加（约 4×）"
+}
+
 // X11UnitExecNote warns when the publisher unit points at a binary that no
 // longer exists. ompinyin cannot fix it by itself (the baked path is whatever
 // the binary that opted in saw), so it must be visible instead of silently
@@ -293,4 +320,90 @@ func probeAll(paths ...string) bool {
 		}
 	}
 	return true
+}
+
+// HerdrPrefix is the prefix herdr binds (its own config, default "ctrl+b").
+// Empty means "herdr is not configured here" — no conflict to report.
+func HerdrPrefix(home string) (prefix string, extras []string) {
+	path := os.Getenv("HERDR_CONFIG_PATH")
+	if path == "" {
+		p := filepath.Join(home, ".config", "herdr", "config.toml")
+		if _, err := os.Stat(p); err != nil {
+			return "", nil // herdr absent: it would use its built-in ctrl+b
+		}
+		path = p
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil
+	}
+	return ParseHerdrPrefix(string(b))
+}
+
+// ParseHerdrPrefix reads `prefix` and `extra_prefixes` out of herdr's config. A
+// line scan is enough and avoids a TOML dependency (the file is machine-shaped:
+// `[keys]` followed by `prefix = "ctrl+space"`). "" when the section or keys are
+// absent, which means herdr's built-in default applies.
+func ParseHerdrPrefix(config string) (prefix string, extras []string) {
+	inKeys := false
+	for _, line := range strings.Split(config, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		if strings.HasPrefix(t, "[") {
+			inKeys = t == "[keys]"
+			continue
+		}
+		if !inKeys {
+			continue
+		}
+		k, v, ok := strings.Cut(t, "=")
+		if !ok {
+			continue
+		}
+		val := strings.Trim(strings.TrimSpace(v), `"'`)
+		switch strings.TrimSpace(k) {
+		case "prefix":
+			prefix = val
+		case "extra_prefixes":
+			for _, e := range strings.Split(strings.Trim(val, "[]"), ",") {
+				if e = strings.Trim(strings.TrimSpace(e), `"'`); e != "" {
+					extras = append(extras, e)
+				}
+			}
+		}
+	}
+	return prefix, extras
+}
+
+// HerdrConflict reports why another tool already owns one of these chords:
+// herdr's prefix (and extra_prefixes) are grabbed before any application sees
+// them, so an fcitx5 trigger key that matches would only work in windows herdr
+// does not handle. empty when there is no clash.
+func HerdrConflict(prefix string, extras []string, keys []string) string {
+	chords := append([]string{prefix}, extras...)
+	for _, c := range chords {
+		if c == "" {
+			continue
+		}
+		for _, k := range keys {
+			if hotkey.SameKey(c, k) {
+				return c
+			}
+		}
+	}
+	return ""
+}
+
+// HerdrNote turns a herdr conflict into the doctor/plan one-liner. It is a
+// warning, not a failure: the chord still works everywhere herdr is not in the
+// loop, and which side to move is the user's call (ompinyin never edits another
+// tool's config).
+func (c *Current) HerdrNote() string {
+	if c.HerdrPrefixConflict == "" {
+		return ""
+	}
+	return "；⚠ herdr 的前缀也是 " + c.HerdrPrefixConflict +
+		"：在 herdr 的窗口里会先被它截获（输入法收不到）。把 herdr 的 [keys] prefix 改成 ctrl+b 即可，或用 fcitx5 的另一个触发键"
 }

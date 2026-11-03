@@ -79,7 +79,7 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 			Detail: "Hyprland force_zero_scaling=false：合成器已在缩放 X11 窗口，无需 Xft.dpi（发布反而会二次放大）"})
 	} else if c.X11Available {
 		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK && !c.X11UnitExecMissing && c.X11DPIActual == c.X11DPIDesired,
-			Detail: fmt.Sprintf("Xft.dpi 期望=%d 实际=%d（scale=%.2f）%s%s", c.X11DPIDesired, c.X11DPIActual, c.X11Scale, c.X11ForeignNote(), c.X11UnitExecNote())})
+			Detail: fmt.Sprintf("Xft.dpi 期望=%d 实际=%d（scale=%.2f）%s%s%s", c.X11DPIDesired, c.X11DPIActual, c.X11Scale, c.X11ForeignNote(), c.X11UnitExecNote(), c.X11ToolkitNote())})
 	} else {
 		out = append(out, Check{Name: "X11 HiDPI", OK: c.X11ConfigOK && c.X11UnitsOK && !c.X11UnitExecMissing,
 			Detail: "未检测到 XWayland；已收敛 Xresources 与缩放监听，待 X11 会话发布" + c.X11ForeignNote() + c.X11UnitExecNote()})
@@ -210,10 +210,17 @@ func Doctor(d catalog.Desired, c *observe.Current) []Check {
 	// trigger keys
 	if c.HotkeyOK {
 		out = append(out, Check{Name: "触发键", OK: true,
-			Detail: strings.Join(hotkey.DefaultKeys, " / ") + "（herdr Ctrl+Space 已避让）"})
+			Detail: strings.Join(hotkey.DefaultKeys, " / ") + "（开/停用输入法；中英切换在 rime 内由 Shift 完成）" + c.HerdrNote()})
 	} else {
-		out = append(out, Check{Name: "触发键", OK: false, Detail: "[Hotkey/TriggerKeys] 未达目标值"})
+		out = append(out, Check{Name: "触发键", OK: false,
+			Detail: "[Hotkey/TriggerKeys] 未达目标值（期望 " + strings.Join(hotkey.DefaultKeys, " / ") + "）" + c.HerdrNote()})
 	}
+
+	// managed feel: the full_shape reset is written by INDEX
+	// (switches/@4/reset), so an upstream switch reorder would silently reset a
+	// different switch. Read the compiled schema and assert the index still
+	// points at full_shape instead of trusting the constant.
+	out = append(out, checkFullShapeIndex(d, c))
 
 	// legacy dir
 	out = append(out, Check{Name: "遗留目录", OK: !c.LegacyDirExists,
@@ -311,4 +318,60 @@ func checkEnvRedLine() (bool, string) {
 		}
 	}
 	return true, "无 IM 环境变量泄漏；Omarchy 自带注入生效"
+}
+
+// checkFullShapeIndex verifies that switches[catalog.FullShapeSwitchIndex] is
+// still full_shape in every enabled schema's COMPILED config. rime patches pick
+// list items by index, so this is the one managed 手感项 that can rot silently
+// when upstream inserts or reorders a switch.
+func checkFullShapeIndex(d catalog.Desired, c *observe.Current) Check {
+	var checked, bad []string
+	for _, schema := range d.SchemaList() {
+		path := filepath.Join(c.RimeDir, "build", schema+".schema.yaml")
+		b, err := os.ReadFile(path)
+		if err != nil {
+			continue // not compiled yet: L5's build check owns that failure
+		}
+		names := switchNames(b)
+		checked = append(checked, schema)
+		got := "缺失"
+		if len(names) > catalog.FullShapeSwitchIndex {
+			got = names[catalog.FullShapeSwitchIndex]
+		}
+		if got != "full_shape" {
+			bad = append(bad, fmt.Sprintf("%s: switches[%d]=%s", schema, catalog.FullShapeSwitchIndex, got))
+		}
+	}
+	if len(checked) == 0 {
+		return Check{Name: "手感项（全半角）", OK: true, Detail: "未找到已编译的方案配置；收敛后会复核"}
+	}
+	if len(bad) > 0 {
+		return Check{Name: "手感项（全半角）", OK: false,
+			Detail: "全半角补丁按下标选择开关，但 " + strings.Join(bad, "；") + " ——上游重排了 switches，需更新 catalog.FullShapeSwitchIndex"}
+	}
+	return Check{Name: "手感项（全半角）", OK: true,
+		Detail: fmt.Sprintf("switches[%d]=full_shape（%s）；reset=0 且不跨会话记忆", catalog.FullShapeSwitchIndex, strings.Join(checked, ", "))}
+}
+
+// switchNames returns the `- name:` entries of the top-level switches list, in
+// order. A line-based scan is enough: the compiled list is machine-rendered.
+func switchNames(b []byte) []string {
+	var names []string
+	inSwitches := false
+	for _, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !inSwitches {
+			if trimmed == "switches:" {
+				inSwitches = true
+			}
+			continue
+		}
+		if line != "" && line[0] != ' ' && line[0] != '\t' {
+			break // next top-level key
+		}
+		if rest, ok := strings.CutPrefix(trimmed, "- name:"); ok {
+			names = append(names, strings.TrimSpace(rest))
+		}
+	}
+	return names
 }

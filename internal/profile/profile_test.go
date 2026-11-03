@@ -52,11 +52,14 @@ func TestEnsureRimeMissing(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	if names := itemNames(out); len(names) != 2 || names[0] != "keyboard-us" || names[1] != "rime" {
-		t.Errorf("items = %v", names)
+	if names := itemNames(out); len(names) != 1 || names[0] != "rime" {
+		t.Errorf("fresh profile must contain rime only, got %v", names)
+	}
+	if strings.Contains(out, "keyboard-us") {
+		t.Errorf("fresh profile must not register keyboard-us:\n%s", out)
 	}
 	// GroupOrder rendered last
-	if strings.LastIndex(out, "[GroupOrder]") < strings.LastIndex(out, "[Groups/0/Items/1]") {
+	if strings.LastIndex(out, "[GroupOrder]") < strings.LastIndex(out, "[Groups/0/Items/0]") {
 		t.Errorf("GroupOrder must be last:\n%s", out)
 	}
 }

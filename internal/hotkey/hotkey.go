@@ -14,11 +14,50 @@ import (
 // TriggerSection is the fcitx5 config section holding trigger keys.
 const TriggerSection = "Hotkey/TriggerKeys"
 
-// DefaultKeys are the convergence target trigger keys: Alt+Space avoids the
-// herdr Ctrl+Space prefix. It is the sole trigger — Control+Shift_L was
-// dropped because it collided with too many app-level chords (Alt+Tab-family
-// focus / terminal shift selection) and is redundant with Alt+Space.
-var DefaultKeys = []string{"Alt+space"}
+// DefaultKeys are the convergence target trigger keys — the fcitx5-level
+// "switch input method" chord. With the default single-`rime` profile it is the
+// IME on/off switch (中英 lives inside rime on Shift, schema switching on F4).
+//
+// Control+space is the conventional Chinese-IME chord (fcitx4/Windows/搜狗).
+// Its one collision on Omarchy is herdr's shipped prefix (also ctrl+space); that
+// is resolved in herdr's own config (ctrl+b is its built-in default), not here.
+// Nothing else claims it: Super+space / Super+Ctrl+space / Super+Alt+space are
+// the Omarchy menus, Alt+space is the "window menu" chord, Ctrl+` belongs to
+// editors. See docs/dev-notes.md D8.
+var DefaultKeys = []string{"Control+space"}
+
+// PruneKeys are trigger keys convergence REMOVES from [Hotkey/TriggerKeys].
+//
+// Alt+space is what older ompinyin versions wrote, before it became clear that
+// it is the universal "window menu" chord (toolkits eat it) and that herdr's
+// prefix could simply be moved off Control+space instead. Merging alone ("add,
+// never remove") would leave both bound on an existing host, so the managed
+// terminal state drops it.
+var PruneKeys = []string{"Alt+space"}
+
+// SameKey compares two chords across the two spellings in play (fcitx5's
+// "Control+space" vs herdr's "ctrl+space"), ignoring case and spaces. Exported
+// because host probes compare fcitx5's trigger keys against other tools' chords.
+func SameKey(a, b string) bool {
+	return canonicalKey(a) == canonicalKey(b)
+}
+
+// sameKey is SameKey for the package-internal call sites.
+func sameKey(a, b string) bool { return SameKey(a, b) }
+
+func canonicalKey(k string) string {
+	k = strings.ToLower(strings.ReplaceAll(k, " ", ""))
+	return strings.ReplaceAll(k, "ctrl+", "control+")
+}
+
+func isPruned(k string) bool {
+	for _, p := range PruneKeys {
+		if sameKey(k, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // bareModifiers are silently dropped by fcitx5 when used alone (regression
 // case from the field notes): bare `Shift` never reaches the config.
@@ -163,10 +202,13 @@ func sectionKeyValues(lines []string) []string {
 }
 
 // mergeKeys returns managed keys first (they own the priority slots), then
-// any existing user keys not among them (dedup, order preserved).
+// any existing user keys that are neither already listed nor pruned.
 func mergeKeys(existing, managed []string) []string {
 	out := append([]string{}, managed...)
 	for _, v := range existing {
+		if isPruned(v) {
+			continue
+		}
 		dup := false
 		for _, m := range out {
 			if v == m {
@@ -203,10 +245,13 @@ func HasTrigger(content string, keys []string) bool {
 		}
 		have := map[string]bool{}
 		for _, v := range sectionKeyValues(s.Lines) {
-			have[v] = true
+			have[canonicalKey(v)] = true
+			if isPruned(v) {
+				return false // a pruned chord is still bound: not converged
+			}
 		}
 		for _, k := range keys {
-			if !have[k] {
+			if !have[canonicalKey(k)] {
 				return false
 			}
 		}

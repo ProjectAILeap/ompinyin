@@ -111,7 +111,7 @@ func TestCollectConvergedHost(t *testing.T) {
 	if err := os.WriteFile(ProfilePath(), []byte("[Groups/0]\nDefaultIM=rime\n\n[Groups/0/Items/0]\nName=rime\nLayout=\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(ConfigPath(), []byte("[Hotkey/TriggerKeys]\n0=Alt+space\n1=Control+Shift_L\n"), 0o644); err != nil {
+	if err := os.WriteFile(ConfigPath(), []byte("[Hotkey/TriggerKeys]\n0=Control+space\n1=Control+Shift_L\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tray.WriteDropIn(home, "omarchy-fcitx5.service", tray.DropInContent); err != nil {
@@ -119,7 +119,7 @@ func TestCollectConvergedHost(t *testing.T) {
 	}
 	// L4 candidate-window theming (§6.6)
 	for rel, content := range map[string]string{
-		theme.ConfRelPath: theme.ConfContent("TestFont"),
+		theme.ConfRelPath: theme.ConfContent("", "TestFont"),
 		theme.HookRelPath: theme.HookContent(),
 	} {
 		abs := filepath.Join(home, filepath.FromSlash(rel))
@@ -154,7 +154,7 @@ func TestCollectConvergedHost(t *testing.T) {
 	for _, f := range patches.ManagedFiles(d) {
 		st.ManagedFiles[f.RelPath] = state.HashBytes([]byte(f.Content))
 	}
-	st.ManagedFiles[theme.ConfRelPath] = state.HashBytes([]byte(theme.ConfContent("TestFont")))
+	st.ManagedFiles[theme.ConfRelPath] = state.HashBytes([]byte(theme.ConfContent("", "TestFont")))
 	st.ManagedFiles[theme.HookRelPath] = state.HashBytes([]byte(theme.HookContent()))
 	c := Collect(d, st)
 
@@ -309,5 +309,49 @@ func TestCollectX11UnitExecMissing(t *testing.T) {
 	}
 	if c.X11UnitExecNote() != "" {
 		t.Errorf("no note expected when the binary exists: %q", c.X11UnitExecNote())
+	}
+}
+
+func TestParseHerdrPrefix(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+		prefix string
+		extras []string
+	}{
+		{"Omarchy ships ctrl+space", "[theme]\nname = \"terminal\"\n\n[keys]\nprefix = \"ctrl+space\"\nreload_config = \"prefix+q\"\n", "ctrl+space", nil},
+		{"default is ctrl+b", "[keys]\n", "", nil},
+		{"quoted list of extra prefixes", "[keys]\nprefix = \"ctrl+b\"\nextra_prefixes = [\"ctrl+space\", \"f12\"]\n", "ctrl+b", []string{"ctrl+space", "f12"}},
+		{"prefix outside [keys] is ignored", "prefix = \"ctrl+space\"\n", "", nil},
+		{"comments are ignored", "[keys]\n# prefix = \"ctrl+space\"\n", "", nil},
+	}
+	for _, c := range cases {
+		gotPrefix, gotExtras := ParseHerdrPrefix(c.config)
+		if gotPrefix != c.prefix || strings.Join(gotExtras, ",") != strings.Join(c.extras, ",") {
+			t.Errorf("%s: got (%q, %v), want (%q, %v)", c.name, gotPrefix, gotExtras, c.prefix, c.extras)
+		}
+	}
+}
+
+// TestHerdrConflict: a fresh Omarchy ships herdr with ctrl+space, which is also
+// the managed trigger key — the clash must be detectable (and diagnosable), not
+// silently resolved by picking a different key behind the user's back.
+func TestHerdrConflict(t *testing.T) {
+	keys := []string{"Control+space"}
+	if got := HerdrConflict("ctrl+space", nil, keys); got != "ctrl+space" {
+		t.Errorf("same chord in herdr spelling must clash, got %q", got)
+	}
+	if got := HerdrConflict("ctrl+b", nil, keys); got != "" {
+		t.Errorf("ctrl+b must not clash, got %q", got)
+	}
+	if got := HerdrConflict("", []string{"CTRL+Space"}, keys); got != "CTRL+Space" {
+		t.Errorf("extra_prefixes must be checked too, got %q", got)
+	}
+	c := &Current{HerdrPrefixConflict: "ctrl+space"}
+	if !strings.Contains(c.HerdrNote(), "herdr") || !strings.Contains(c.HerdrNote(), "ctrl+b") {
+		t.Errorf("note must name the tool and the remedy: %q", c.HerdrNote())
+	}
+	if (&Current{}).HerdrNote() != "" {
+		t.Error("no conflict must stay silent")
 	}
 }
