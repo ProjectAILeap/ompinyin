@@ -197,8 +197,8 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 		return writeJSON(opts.Stdout, dryRunReport(d, p, cmd+" --dry-run"))
 	}
 
-	opts.outf("── 收敛计划（desired: primary=%s extra=%v model=%v channel=%s）──",
-		d.Primary, d.Extra, d.Model, d.Channel)
+	opts.outf("── 收敛计划（desired: primary=%s extra=%v model=%v channel=%s ims=%v）──",
+		d.Primary, d.Extra, d.Model, d.Channel, d.IMsOrDefault())
 	opts.outf("%s", strings.TrimRight(p.Describe(), "\n"))
 	if opts.DryRun {
 		opts.outf("(dry-run: no changes applied)")
@@ -425,7 +425,7 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 	} else if len(removed) > 0 {
 		opts.outf("[完成] 已清理 %d 个旧备份（保留最近 %d 个）", len(removed), state.LedgerKeepBackups)
 	}
-	opts.outf("[完成] 终态收敛完成；%s 切方案，%s 开/停用输入法，Shift 切中英（rime 内）",
+	opts.outf("[完成] 终态收敛完成；%s 切方案，%s 在 IM 组内切英文键盘，Shift 切中英（rime 内）",
 		strings.Join(catalog.SwitcherHotkeys, " / "), strings.Join(hotkey.DefaultKeys, " / "))
 	return ExitOK
 }
@@ -502,7 +502,7 @@ func runStopWindow(opts Options, backupDir string, cur *observe.Current, d catal
 
 	// L4 profile / hotkey / drop-in
 	if hostNeeded {
-		if err := writeProfile(opts, backupDir); err != nil {
+		if err := writeProfile(opts, backupDir, d); err != nil {
 			opts.errf("[失败] L4 profile：%v", err)
 			return ExitExecFail
 		}
@@ -998,24 +998,29 @@ func isStableTag(tag string) bool {
 	return tag != "" && tag != "nightly"
 }
 
-func writeProfile(opts Options, backupDir string) error {
+func writeProfile(opts Options, backupDir string, d catalog.Desired) error {
 	p := observe.ProfilePath()
 	b, err := os.ReadFile(p)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	newContent, changed, err := profile.EnsureRime(string(b))
+	ims := d.IMsOrDefault()
+	newContent, changed, err := profile.ConvergeGroup(string(b), ims)
 	if err != nil {
 		return err
 	}
 	if !changed {
-		opts.outf("[跳过] L4 profile 已注册 rime")
+		opts.outf("[跳过] L4 输入法组已是终态 [%s]", strings.Join(ims, " "))
 		return nil
 	}
 	if err := copyToBackup(backupDir, p); err != nil {
 		return fmt.Errorf("backup %s: %w", p, err)
 	}
-	return state.WriteAtomic(p, []byte(newContent))
+	if err := state.WriteAtomic(p, []byte(newContent)); err != nil {
+		return err
+	}
+	opts.outf("[完成] L4 输入法组收敛为 [%s]（fcitx5 的 IM 热键以「组内 >1 个」为前提）", strings.Join(ims, " "))
+	return nil
 }
 
 func writeHotkey(opts Options, backupDir string) error {
@@ -1033,18 +1038,35 @@ func writeHotkey(opts Options, backupDir string) error {
 				strings.Join(hotkey.DefaultKeys, " / "), clash)
 		}
 	}
-	newContent, changed, err := hotkey.EnsureTrigger(string(b), hotkey.DefaultKeys)
+	// Both edits land in ONE read→write (and therefore one backup): the trigger
+	// merge and the AltTriggerKeys teardown touch the same file, and backing up
+	// twice would keep our own half-written snapshot instead of the user's
+	// original (invariant 21).
+	trigger, triggerChanged, err := hotkey.EnsureTrigger(string(b), hotkey.DefaultKeys)
 	if err != nil {
 		return err
 	}
-	if !changed {
-		opts.outf("[跳过] L4 触发键已含受管键（用户附加键保留）")
+	merged, altChanged, err := hotkey.EnsureAltTriggerEmpty(trigger)
+	if err != nil {
+		return err
+	}
+	if !triggerChanged && !altChanged {
+		opts.outf("[跳过] L4 触发键已含受管键（用户附加键保留）；[Hotkey/AltTriggerKeys] 已是空段")
 		return nil
 	}
 	if err := copyToBackup(backupDir, p); err != nil {
 		return fmt.Errorf("backup %s: %w", p, err)
 	}
-	return state.WriteAtomic(p, []byte(newContent))
+	if err := state.WriteAtomic(p, []byte(merged)); err != nil {
+		return err
+	}
+	if triggerChanged {
+		opts.outf("[完成] L4 触发键已写入 %s（用户附加键保留）", strings.Join(hotkey.DefaultKeys, " / "))
+	}
+	if altChanged {
+		opts.outf("[完成] L4 清空 [Hotkey/AltTriggerKeys]（有 >1 个 IM 时它会把左 Shift 当成「临时切换输入法」，与触发键同效）")
+	}
+	return nil
 }
 
 // traySet performs step B: read pinned → merge Fcitx → one `bar set`.

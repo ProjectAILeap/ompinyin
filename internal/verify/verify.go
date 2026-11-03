@@ -67,6 +67,9 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 		}
 	}
 
+	// 3b. the group SHAPE (fcitx5 gates every IM hotkey on len(items) > 1)
+	out = append(out, checkGroupIMs(d, c))
+
 	// 4. tray visible: drop-in + pinned
 	out = append(out, Check{Name: "托盘 drop-in", OK: c.DropInOK,
 		Detail: dropInDetail(c)})
@@ -89,6 +92,29 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 	out = append(out, themeCheck(c))
 
 	return out
+}
+
+// checkGroupIMs asserts the fcitx5 group's item list matches Desired.IMs. The
+// shape is not cosmetic: fcitx5 gates every IM hotkey on len(items) > 1, so one
+// stale item (the "keyboard-us" old versions created) flips Ctrl+Space and left
+// Shift from inert to live — and then AltTriggerKeys steals left Shift from rime.
+func checkGroupIMs(d catalog.Desired, c *observe.Current) Check {
+	want := d.IMsOrDefault()
+	if catalog.SameIMs(c.GroupIMs, want) {
+		detail := "[" + strings.Join(want, " ") + "]"
+		if len(want) == 1 {
+			detail += "；单 IM：fcitx5 的 IM 热键全部失效（canTrigger 要求 >1），中英靠 rime 的 Shift"
+		} else {
+			detail += "；Ctrl+Space 在此两项间切换，中英在 rime 内由 Shift 完成"
+		}
+		return Check{Name: "输入法组", OK: true, Detail: detail}
+	}
+	have := "无"
+	if len(c.GroupIMs) > 0 {
+		have = strings.Join(c.GroupIMs, " ")
+	}
+	return Check{Name: "输入法组", OK: false,
+		Detail: fmt.Sprintf("现为 [%s]，终态 [%s]（组内 IM 的数量与顺序决定了 fcitx5 能不能动作：>1 个时触发键/AltTrigger 才生效，并会与 rime 抢左 Shift）—— 重跑 ompinyin install", have, strings.Join(want, " "))}
 }
 
 // serviceDownDetail explains a stopped fcitx5 with an actionable remedy. Two
@@ -194,6 +220,36 @@ func checkGrammarCompiled(d catalog.Desired, c *observe.Current) Check {
 	return Check{Name: "grammar 编入", OK: true, Detail: detail}
 }
 
+// triggerDetail states what the trigger key can actually do on this host.
+// fcitx5 gates trigger/activate/deactivate on canTrigger() == group items > 1,
+// so with the single-IM shape the chord is inert — claiming "开/停用输入法"
+// there would be a false green (真机 2026-11-03 抓到的正是这句).
+func triggerDetail(d catalog.Desired, c *observe.Current) string {
+	keys := strings.Join(hotkey.DefaultKeys, " / ")
+	ims := d.IMsOrDefault()
+	if len(ims) > 1 {
+		return keys + "（在 " + strings.Join(ims, " / ") + " 间切换；中英切换在 rime 内由 Shift 完成）"
+	}
+	return keys + "（单 IM：fcitx5 的 canTrigger() 要求组内 >1 个 IM，此键不生效；中英切换在 rime 内由 Shift 完成）"
+}
+
+// checkAltTrigger asserts [Hotkey/AltTriggerKeys] is an EMPTY section. fcitx5
+// ships Shift_L there; with >1 IM it fires the same toggle() as the trigger key
+// and steals left Shift from rime's commit_code. "Empty" must be encoded as a
+// present-but-childless section: an absent section means the shipped default.
+func checkAltTrigger(c *observe.Current) Check {
+	if c.AltTriggerOK {
+		return Check{Name: "AltTriggerKeys", OK: true,
+			Detail: "[Hotkey/AltTriggerKeys] 空段 —— 左 Shift 归 rime（fcitx5 不再把它当「临时切换输入法」）"}
+	}
+	bound := "缺段（fcitx5 默认 Shift_L）"
+	if len(c.AltTriggerKeys) > 0 {
+		bound = strings.Join(c.AltTriggerKeys, " / ")
+	}
+	return Check{Name: "AltTriggerKeys", OK: false,
+		Detail: "现为 " + bound + "：组内 >1 个 IM 时它会把左 Shift 变成「切输入法」，与 Ctrl+Space 同效 —— 重跑 ompinyin install（收敛会清空该段）"}
+}
+
 // Doctor runs the full health checklist (§7 doctor).
 func Doctor(d catalog.Desired, c *observe.Current) []Check {
 	out := TerminalState(d, c)
@@ -210,11 +266,14 @@ func Doctor(d catalog.Desired, c *observe.Current) []Check {
 	// trigger keys
 	if c.HotkeyOK {
 		out = append(out, Check{Name: "触发键", OK: true,
-			Detail: strings.Join(hotkey.DefaultKeys, " / ") + "（开/停用输入法；中英切换在 rime 内由 Shift 完成）" + c.HerdrNote()})
+			Detail: triggerDetail(d, c) + c.HerdrNote()})
 	} else {
 		out = append(out, Check{Name: "触发键", OK: false,
 			Detail: "[Hotkey/TriggerKeys] 未达目标值（期望 " + strings.Join(hotkey.DefaultKeys, " / ") + "）" + c.HerdrNote()})
 	}
+	// AltTriggerKeys: fcitx5's shipped Shift_L would compete with rime's
+	// ascii_composer for the same key as soon as the group has >1 IM.
+	out = append(out, checkAltTrigger(c))
 
 	// managed feel: the full_shape reset is written by INDEX
 	// (switches/@4/reset), so an upstream switch reorder would silently reset a

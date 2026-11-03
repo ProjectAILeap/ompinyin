@@ -140,3 +140,74 @@ func TestEnsureTriggerPreservesUserKeys(t *testing.T) {
 		t.Error("HasTrigger must normalise Ctrl/Control and case, and reject a bound pruned key")
 	}
 }
+
+// EnsureAltTriggerEmpty encodes "no alt-trigger keys" as a section that EXISTS
+// with no children: an absent section means fcitx5's shipped Shift_L.
+func TestEnsureAltTriggerEmpty(t *testing.T) {
+	in := strings.Join([]string{
+		"[Hotkey]",
+		"ModifierOnlyKeyTimeout=-1",
+		"",
+		"[Hotkey/TriggerKeys]",
+		"0=Control+space",
+		"",
+		"[Hotkey/AltTriggerKeys]",
+		"0=Shift_L",
+		"",
+		"[Behavior]",
+		"ActiveByDefault=True",
+		"",
+	}, "\n")
+	out, changed, err := EnsureAltTriggerEmpty(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("stripping Shift_L must report changed")
+	}
+	if keys := AltTriggerKeys(out); len(keys) != 0 {
+		t.Errorf("AltTriggerKeys = %v; want empty", keys)
+	}
+	if !HasEmptyAltTrigger(out) {
+		t.Errorf("section must exist and be empty:\n%s", out)
+	}
+	for _, want := range []string{"[Hotkey/TriggerKeys]\n0=Control+space", "ModifierOnlyKeyTimeout=-1", "ActiveByDefault=True"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("neighbouring section damaged, missing %q:\n%s", want, out)
+		}
+	}
+	// Idempotent: a second pass is a no-op with identical bytes.
+	out2, changed2, err := EnsureAltTriggerEmpty(out)
+	if err != nil || changed2 || out2 != out {
+		t.Errorf("not idempotent (changed=%v err=%v):\n%s", changed2, err, out2)
+	}
+}
+
+// A missing section is created empty (the only encoding of "no keys").
+func TestEnsureAltTriggerEmptyCreatesSection(t *testing.T) {
+	in := "[Hotkey/TriggerKeys]\n0=Control+space\n"
+	out, changed, err := EnsureAltTriggerEmpty(in)
+	if err != nil || !changed {
+		t.Fatalf("err=%v changed=%v", err, changed)
+	}
+	if !HasEmptyAltTrigger(out) {
+		t.Errorf("empty section not created:\n%s", out)
+	}
+	if !strings.Contains(out, "0=Control+space") {
+		t.Errorf("trigger keys lost:\n%s", out)
+	}
+}
+
+// HasEmptyAltTrigger must distinguish "no section" (fcitx5 falls back to
+// Shift_L) from "empty section" (nothing bound).
+func TestHasEmptyAltTriggerDistinguishesAbsent(t *testing.T) {
+	if HasEmptyAltTrigger("[Hotkey/TriggerKeys]\n0=Control+space\n") {
+		t.Error("absent section must NOT count as empty (fcitx5 would use Shift_L)")
+	}
+	if got := AltTriggerKeys("[Hotkey/TriggerKeys]\n0=Control+space\n"); got != nil {
+		t.Errorf("absent section must read nil, got %v", got)
+	}
+	if !HasEmptyAltTrigger("\n[Hotkey/AltTriggerKeys]\n\n[Behavior]\n") {
+		t.Error("present-but-childless section must count as empty")
+	}
+}
