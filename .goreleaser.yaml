@@ -1,4 +1,4 @@
-# goreleaser — GitHub Releases static binary + checksums (DESIGN §10).
+# goreleaser — GitHub Releases static binary + checksums (docs/design.md §10).
 # Not a build dependency: `make release-check` validates this file only.
 version: 2
 

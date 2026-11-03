@@ -6,11 +6,13 @@ description: >
   icon + candidate window following the Omarchy theme", idempotently and
   reversibly. Use when asked to install the Chinese IME, fix an ompinyin
   install, "can't type Chinese / no Chinese output", a missing top-bar IM
-  icon, or to diagnose input-method problems — e.g. a candidate window that is
-  too small in X11/XWayland apps (WeChat), or WeChat / other non-Wayland apps
-  whose UI and fonts are too large from HiDPI double-scaling. Triggers:
-  ompinyin, install Chinese input, fcitx5, rime, 装中文输入法, 打不出中文,
-  no Chinese IME, 候选框太小, 微信字太大, HiDPI, XWayland.
+  icon, or to diagnose input-method problems — a candidate window that is too
+  small in X11/XWayland apps (WeChat, Baidu Netdisk), WeChat / other
+  non-Wayland apps whose UI and fonts are too large from HiDPI double-scaling,
+  a lock screen that rejects the password after full-width (全角) input, or a
+  stuck 中/英 switch. Triggers: ompinyin, install Chinese input, fcitx5, rime,
+  装中文输入法, 打不出中文, no Chinese IME, 候选框太小, 微信字太大, HiDPI,
+  XWayland, 全角, 锁屏密码, 切不了中英文.
 ---
 
 # ompinyin 中文输入法助手（安装 / 排障）
@@ -26,6 +28,8 @@ description: >
 - 用**普通用户**跑，**勿 root**——只有 `pacman` / `ompinyin source` 会 `sudo` 提权。
 - 万象模型 ~420MB，预检要求空闲 ≥2GB。
 - 一台机器只需跑一次；重跑是安全的（幂等）。
+- 二进制旧了先升级：`ompinyin update --self`（v1.3 前的版本有两个已知缺陷：登录时
+  `Xft.dpi` 从不发布、右侧 Shift 可能失效，见「排障」第一条）。
 
 ## 流程
 
@@ -35,16 +39,39 @@ description: >
 2) ompinyin install --dry-run --json   → 读 plan，确认 plan.needsApply
 3) ompinyin install -y                 # 收敛：全拼 + 万象 + 顶栏图标 + 候选框跟随主题
 4) ompinyin status && ompinyin doctor  # 须无差异、全通过
-5) 人工核对：Alt+Space 切中英、F4 切方案、顶栏能看到输入法图标、候选框是当前主题配色
+5) 人工核对：
+     · Ctrl+Space  开/停用输入法（停用 = 直接走键盘布局输英文）；判据是按键前后 `fcitx5-remote` 是否 2 → 1。
+                   它与 herdr 的 prefix 天然冲突，所以 herdr 前缀应为 `ctrl+b`（dotfiles 侧，本工具不管）
+     · 左右 Shift  在 rime 内切中英（受管手感项，`commit_code`；不依赖输入法开关）
+     · F4          切 Rime 方案（全拼 ↔ 双拼；fcitx5 的输入法列表里只有一项 "Rime"）
+     · 顶栏能看到输入法图标；候选框是当前主题配色
 ```
 
 **完成信号**：`plan.needsApply:false`（或 `status` 无差异）= 没事可做，**停止，别再跑**。
 
+## 受管手感项（v1.3 起）
+
+这些由 ompinyin 生成，**不要手改**；改了下次收敛会被覆盖（有备份）：
+
+| 项 | 值 | 效果 |
+|---|---|---|
+| `menu/page_size` | 9 | 每页 9 个候选 |
+| `,` `.` | `Page_Up/Page_Down` | 翻页 |
+| `ascii_composer/switch_key/Shift_L`、`Shift_R` | `commit_code` | 左右 Shift 都能切中英（先上屏已打编码） |
+| `Control_L/R` | `noop` | Ctrl 尾随不误切 |
+| `good_old_caps_lock` | `true` | CapsLock 只切大写 |
+| `switches/@4/reset` | `0` | **全半角永远从半角起步**（写进每个方案的 custom.yaml） |
+| `switcher/save_options` | 4 项（**不含** `full_shape`） | 全角不跨会话记忆；与上一条成对 |
+| `[Hotkey/TriggerKeys]` | 只有 `Control+space` | 中文输入法的传统键；旧版本写过的 `Alt+space`（窗口菜单键）被**移除** |
+| `switcher/hotkeys` | `[F4]` | 上游一次绑了 F4 + `Ctrl+\`` 家族；`Ctrl+\`` 与 VS Code 终端、JetBrains quick-switch 冲突，只留 F4 |
+
+仍归用户：`ascii_punct`（中英标点）/ 简繁 / emoji / 单字 的**默认值**，以及其它修饰键。
+
 ## X11 HiDPI / 候选框大小（默认只诊断）
 
-Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信；走 fcitx4 旧协议、
-输入上下文挂在 `x11::0`）里的候选框偏小**：fcitx5 classicui 的 X11 UI 只读 X 资源
-`Xft.dpi`（XWayland 的 RandR 恒上报 96，`PerScreenDPI` 在 XWayland 上被强制忽略）。
+Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信、百度网盘；输入上下文挂在
+`x11::0`）里的候选框偏小**：fcitx5 classicui 的 X11 UI 只读 X 资源 `Xft.dpi`
+（XWayland 的 RandR 恒上报 96，`PerScreenDPI` 在 XWayland 上被强制忽略）。
 所以需要全局 `Xft.dpi = round(96 × 显示器缩放)`。
 
 - **默认只读诊断**：`ompinyin status` / `doctor` 展示 scale、期望/实际 `Xft.dpi`、
@@ -60,17 +87,24 @@ Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信；�
 **前置是 Hyprland `xwayland:force_zero_scaling`**（Omarchy 默认 `true` = X11 窗口
 **不由合成器缩放**，各 toolkit 自己缩）。若为 `false`（合成器已把 X11 整体放大），
 本模式会**自动变为 no-op** 并在 `doctor`/plan 说明原因——**不要试图强行发布**，否则
-候选框与所有 X11 应用会二次放大到 4×。
+候选框与所有 X11 应用会二次放大到 4×。若 `doctor` 说读不到该选项（按默认 true 继续），
+说明 `hyprctl` 不可用，结论是"未验证"。
 
 **`Xft.dpi` 是全局 X11 缩放权，不是候选框私有开关。** 凡把它当逻辑 DPI 的 X11 客户端
-都会受影响；若某个应用又自带显式缩放因子，就会**二次放大**（典型：微信
-`QT_SCALE_FACTOR=2` + `Xft.dpi=192` → 4×，图标与文字整体变大）。
+都会受影响；若某个框架又自带显式缩放因子，就会**二次放大**。
 
 - 规则：**一个框架只能有一个缩放权，禁止叠加。**
-- Qt：删掉显式 `QT_SCALE_FACTOR`，改用 `QT_AUTO_SCREEN_SCALE_FACTOR=1`（自动跟随
-  `Xft.dpi`）或 `QT_SCREEN_SCALE_FACTORS=<scale>`（显式覆盖 DPI 派生因子）——二者
-  不要并用。
-- GTK：必要时用 `GDK_DPI_SCALE` 抵消（`GDK_SCALE` 在管控件缩放）。
+- **GTK3/X11 是当前最容易被坑的组合**：Omarchy 自带的 `~/.config/hypr/monitors.lua`
+  默认就写 `hl.env("GDK_SCALE", "2")`，而 GTK3 的 X11 后端会**同时**应用 `GDK_SCALE`
+  （控件）与 `Xft.dpi`（字体）⇒ 约 4×。`doctor` 会直接点出来：
+  `⚠ 会话里已有显式缩放因子 GDK_SCALE=2，读 Xft.dpi 的 X11 客户端（GTK3/Qt5）会与它叠加（约 4×）`。
+  处理方式二选一，**别两个都留**：把 `monitors.lua` 的 `omarchy_gdk_scale` 降到 1，
+  或干脆不发布 `Xft.dpi`。
+- Qt：删掉显式 `QT_SCALE_FACTOR`，改用 `QT_AUTO_SCREEN_SCALE_FACTOR=1`（跟随
+  `Xft.dpi`）或 `QT_SCREEN_SCALE_FACTORS=<scale>`（显式覆盖 DPI 派生因子）——二者不并用。
+- Chromium/Electron（百度网盘等）：**不读** `Xft.dpi`（二进制里没有该字面量），
+  所以要放大本体得用 `--force-device-scale-factor=<scale>`（留在 XWayland）或
+  `--ozone-platform-hint=wayland`（换原生 Wayland）。**这两条路线互斥**，同时加 = 4×。
 - **不要用「删掉全局 `Xft.dpi`」来修某个应用**——那会让候选框又变小。
 
 **冲突与所有权**：ompinyin 只拥有 `~/.Xresources` 的 marker 块，**绝不删除块外的
@@ -80,7 +114,13 @@ Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信；�
 `xprop -root RESOURCE_MANAGER` 读取。`Xft.dpi` 属**每个 X 会话**（不是每 app、
 也不跨 OS 用户），运行中第三方改动无实时守护，下次 `install`/`doctor`/登录/缩放变化纠正。
 
-`ompinyin x11-hidpi-apply` 是 systemd 私有入口，**勿手动跑**。
+**若 `~/.Xresources`、`~/.config/fcitx5`、两个 `ompinyin-x11-hidpi.*` unit 或
+`rime/*.custom.yaml` 同时被 dotfiles 工具（chezmoi 等）纳管**：先让 dotfiles 退出，
+否则那边一 `apply` 就把收敛结果回退（v1.3 起本机已清理；判据
+`chezmoi managed | rg 'Xresources|fcitx5|ompinyin|rime/.*custom'` 应为空）。
+
+`ompinyin x11-hidpi-apply` 是 systemd 私有入口，**勿手动跑**——它不解析参数，
+加 `--help` 也会真的发布并重启 fcitx5。
 
 ## 红线（勿越）
 
@@ -89,22 +129,47 @@ Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信；�
 - 勿手改 `~/.config/fcitx/rime` 与 `~/.config/omarchy/shell.json`——工具会读→并→写回（`tray.SetPinned`）。
 - 勿跑 `pacman -Syu`（会漂移 Omarchy stable 锁版本；只用 `-Sy` / `-S --needed`）。
 - 顶栏图标是**必做终态**，无 `--tray-pin`/`--no-tray`；装上就有。
-- 候选框跟随 Omarchy 主题也是**默认终态**（无 flag）：`classicui.conf` + `theme-set.d/fcitx5-theme` 钩子入账、按所有权协议覆盖；`~/.local/share/fcitx5/themes/omarchy/` 为钩子生成目录（不入账，但卸载会删）。换主题由钩子自动刷新，勿手改这三个文件。
+- 候选框跟随 Omarchy 主题也是**默认终态**（无 flag）：`classicui.conf` + `theme-set.d/fcitx5-theme` 钩子入账、按所有权协议覆盖（`classicui.conf` 只受管 6 个键，其余键保留）；`~/.local/share/fcitx5/themes/omarchy/` 为钩子生成目录（不入账，但卸载会删）。换主题由钩子自动刷新，勿手改这三个文件。
+- **勿手改受管文件**：`rime/*.custom.yaml`、`classicui.conf`、`~/.config/fcitx5/config` 的 `[Hotkey/TriggerKeys]`、`~/.config/fcitx5/profile`（只保证 rime 注册）、两个 `ompinyin-x11-hidpi.*` unit、`~/.Xresources` 的 marker 块。要改行为就改 `ompinyin install` 的参数。
 - `--x11-hidpi` 是**显式 opt-in**：未显式给出时绝不写 `~/.Xresources`、不装 `xorg-xrdb`、不装单元；启用后**勿再给应用叠加显式缩放因子**（见上）。
 - 勿手改 `~/.Xresources` 里 marker 块之外的内容，勿删别人的 `Xft.dpi`（行级拥有）。
 - **勿在 fcitx5 服务停止时用 `fcitx5-remote`/总线命令探测存活**（`fcitx5-remote -n`/`-q` 也算）：`org.fcitx.Fcitx5` 是唯一总线名，这一步会 D-Bus 激活一个游离 fcitx5 占住它，单元的实例从此启动即退出。存活只用 `pgrep -x fcitx5`；`ompinyin` 的 `status`/`doctor`/`install` 都是安全的（内部只用进程探针）。
 
 ## 排障
 
-- **X11/微信里候选框太小**：见上「X11 HiDPI」——`doctor` 确认后 `install --x11-hidpi`。
-- **微信等非 Wayland 应用整体变大（图标+文字）**：`Xft.dpi` 与显式缩放因子叠加。先看该应用 desktop/环境里的 `QT_SCALE_FACTOR`；按「一框架一缩放权」改成 `QT_SCREEN_SCALE_FACTORS=<scale>` 或去掉显式因子。**不要删 `Xft.dpi`**。
-- **`doctor` 报 X11 HiDPI 未达标**：`Xft.dpi 实际≠期望`（可能第三方改了根属性，或块外 `Xft.dpi` 获胜）——重跑 `install`；若提示 `force_zero_scaling=false`，则本模式不适用。
+- **X11 应用（微信 / 百度网盘）里候选框太小**：`ompinyin doctor` 看 X11 行。
+  - `期望=192 实际=192` → 已发布；候选框仍小则是该应用的缩放问题（见下一条 4×）。
+  - `实际=0` 且日志里有 `[跳过] … xrdb -query 失败`/`未检测到可用的 X 会话` → **旧版本的登录发布缺陷**（单元启动时 `DISPLAY` 还没被导入 systemd user manager）。升级到 v1.3+；应急可先在自己终端的图形会话里跑一次 `ompinyin install --x11-hidpi -y`（当天有效），再升级。
+  - 根窗口判据：`xprop -root RESOURCE_MANAGER` 应含 `Xft.dpi: 192`。
+- **某个 X11 应用整体变大（图标+文字，约 4×）**：`Xft.dpi` 与该框架的显式缩放因子叠加。
+  看 `doctor` 的 `⚠ 会话里已有显式缩放因子 …`；GTK3-on-X11 的话去 `~/.config/hypr/monitors.lua`
+  把 `omarchy_gdk_scale` 降到 1（或撤销 `--x11-hidpi`）。Qt 应用改用
+  `QT_SCREEN_SCALE_FACTORS=<scale>`。**不要删 `Xft.dpi`**。
+- **锁屏后密码输不对、进不去系统（曾经在全角状态下中招）**：rime 的 `full_shape`
+  会把**字母数字也变全角**（`ａｂｃ`），而锁屏密码框接受 IME 输入、PAM 只做字符比对。
+  v1.3 起已受管（全角永远从半角起步、不跨会话记忆）。若仍发生：先在另一个 TTY
+  （`Ctrl+Alt+F3`）改密码为纯字母数字、或临时用 `KEYMAP` 布局登录；再确认
+  `ompinyin doctor` 的「手感项（全半角）」是 `[完成]`。
+- **`doctor` 报「手感项（全半角）」未达标**：上游 rime-ice 重排了 `switches`，补丁的
+  下标（`switches/@4`）打到了别的开关。**不要手改**，升级 ompinyin（改
+  `catalog.FullShapeSwitchIndex`）。
+- **`doctor` 报 X11 HiDPI 未达标**：`Xft.dpi 实际≠期望`（可能第三方改了根属性，或块外
+  `Xft.dpi` 获胜）——重跑 `install`；若提示 `force_zero_scaling=false`，则本模式不适用。
+- **`Ctrl+Space` 和 herdr 抢键**：输入法用 `Ctrl+Space`（传统键），herdr 的 prefix 应为 `ctrl+b`
+  （`~/.config/herdr/config.toml` 的 `[keys] prefix`，改完 `herdr server reload-config`）。
+  **新装 Omarchy 出厂就是 `ctrl+space`** ⇒ 一定会撞；`ompinyin doctor` 会告警（判据：
+  `observe.HerdrPrefix` 读 `$HERDR_CONFIG_PATH` → `~/.config/herdr/config.toml` → 内置 `ctrl+b`）。
+  ompinyin **只告警**，不改她的配置、也不偷偷换触发键。方案切换是 `F4`（`Ctrl+\`` 家族被移除，会与编辑器冲突）。
+- **键按了没反应**：判据是按键前后 `fcitx5-remote` 是否 `2 → 1`。不影响打字（Shift 在 rime 内切中英），
+  需要关输入法时可用顶栏图标菜单或 `fcitx5-remote -t`。
+- **切不到「纯英文键盘」IM**：profile 里只有 `rime`（v1.3 起不再注册 `keyboard-us`）。
+  `Ctrl+Space` 停用 fcitx5 即等于用键盘布局直接输英文；要独立英文 IM 得自己加。
 - **L1 装包失败 / 镜像慢**：`ompinyin source`（默认 `--preset cn`，内部 `sudo` 写 `/etc/pacman.d/mirrorlist`，勿 `sudo ompinyin source`）后重跑 `install`。
 - **打不出中文**：多为 `default.custom.yaml` 的 `schema_list` 被改成裸 `- <id>` 短格式（`rime_deployer --build` 会忽略，只出 `build/default.yaml` 骨架）。重跑一次 `ompinyin install` 会重写为 `- schema: <id>` map 格式。
 - **顶栏图标在 ◀ 抽屉里**：说明只启用了 notificationitem 没 pin `Fcitx`——重跑 `install` 补 pin。
 - **`doctor`/`status` 报「IM 三态：fcitx5 服务未运行 + 非单元 fcitx5 占着 org.fcitx.Fcitx5」**（常伴顶栏图标消失、打不出中文）：服务停止时被 D-Bus 激活的游离实例占住了总线名，单元自己 spawn 的实例启动即退出 0，`Restart=always` 把它拖成死循环。重跑 `ompinyin install` 会自动清理再启动（v1.2.2 起；旧版只提示你手跑 `pkill -x fcitx5` 再 `systemctl --user reset-failed … && start …`）。见「红线」——以后别在服务停止时手跑 `fcitx5-remote`。
 - **doctor 报「候选框主题」未达标**：`classicui.conf` 被手改/缺失、钩子缺失，或当前 Omarchy 主题颜色（`~/.local/state/omarchy/current/theme/colors.toml`）不可用（极少见）——重跑 `ompinyin install` 会按所有权协议修复；主题颜色缺失时候选框保持 fcitx5 默认外观，属预期。
-- **首次安装**会接管 `default.custom.yaml`（候选数 9、`,` `.` 翻页），改动前已备份到 `backup-<ts>/`。
+- **首次安装**会接管 `default.custom.yaml`（候选数 9、`,` `.` 翻页、手感项），改动前已备份到 `backup-<ts>/`。
 - **headless**：`-y` + 给 pacman 配 NOPASSWD sudoers（工具用 `sudo -n`）。
 
 ## 退出码
@@ -114,4 +179,5 @@ Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信；�
 ## 说明
 
 - 本文件遵循 [Agent Skills 标准](https://agentskills.io/specification)，按需加载；事实与 README「AI / Agent 装机」一致，冲突时以 README / `ompinyin --help` 为准。
+- 仓库内的详细文档：`docs/design.md`（设计方案）、`docs/qa.md`（用户问答，可直接转述给用户）、`docs/dev-notes.md`（开发问题与决策）。
 - 跨 harness 位置：仓库内 `.agents/skills/ompinyin-install/`；装到本机全局则放入 `~/.pi/agent/skills/`、`~/.claude/skills/`、`~/.codex/skills/` 等对应目录。

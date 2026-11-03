@@ -21,7 +21,7 @@
 | 词库 | **雾凇 `rime_ice`** | v1 唯一方案包 |
 | 输入布局 | **全拼** | `schema_list` 只含 `rime_ice`，F4 菜单干净 |
 | 整句模型 | **万象 LMDG** `wanxiang-lts-zh-hans.gram` | 挂到启用方案上，不是万象拼音方案 |
-| 顶栏图标 | **显示且固定（必做）** | 去掉 `--disable notificationitem` + pin `Fcitx`。无 `--no-tray` |
+| 顶栏图标 | **显示且固定** | 去掉 `--disable notificationitem` + pin `Fcitx`。无 `--no-tray` |
 | 候选框 | **跟随当前 Omarchy 主题（默认）** | classicui.conf→omarchy 主题 + theme-set 钩子，换主题自动刷新 |
 | 宿主 | fcitx5-rime + Omarchy 用户服务 | 一行环境变量都不写 |
 
@@ -31,7 +31,7 @@
 - 不装五笔 / 墨奇音形 / 九键 / 云拼音。
 - 不写 `GTK_IM_MODULE` / `~/.xprofile` / 任何 IM 环境变量。
 - 不管 ibus、fcitx4、非 Omarchy 发行版。
-- 不把 Shift 中英切换、`Control/Caps` 等纳入受管终态（§5.4）；`page_size` 与 `,.` 翻页**受管**。
+- 手感项只受管一组**有默认答案**的集合（§5.4）：`page_size`、`,.` 翻页、中英切换（左右 Shift）、`Control`/Caps 的不误切、全半角从半角起步且不跨会话记忆；`ascii_punct`/简繁/emoji 的**默认值**和其余修饰键仍归用户。
 - v1 无 TUI。
 
 ---
@@ -83,10 +83,31 @@ CLI 与状态清单使用短 ID；落到磁盘的是雾凇 schema 名。algebra 
 
 ### 2.3 两层切换，不要混搞
 
-| 层 | 名字 | 谁来切 | 本工具怎么验证 |
+| 层 | 谁在这层 | 谁来切 | 本工具怎么验证 |
 |---|---|---|---|
-| fcitx5 IM | `keyboard-us` ↔ `rime` | 触发键 `Alt+Space` | `fcitx5-remote` 三态 1↔2 |
-| Rime schema | `rime_ice` / `double_pinyin` / … | **F4**（或 Ctrl+`) 方案选单 | 读 `user.yaml` / 人工按 F4；**禁止**用 `fcitx5-remote -s <schema>` |
+| **中英**（引擎内） | rime 的 `ascii_mode` | **左右 Shift**（`commit_code`，受管手感项） | `fcitx5-remote` 仍是 `2`（不变激活态）；人工按 Shift 看候选框 |
+| **Rime schema** | `rime_ice` / `double_pinyin` / … | **`F4`** 呼出方案选单 | 人工按；读 `user.yaml` 的 `previously_selected_schema`。**禁止**用 `fcitx5-remote -s <schema>` |
+| **fcitx5 IM** | profile 里只有一个 `rime`（§6.1） | 触发键 **`Ctrl+Space`**；单 IM 时它是"开/停用输入法" | `fcitx5-remote` 三态 1↔2 |
+
+三条轴互不重叠：中英在引擎里（不受 fcitx5 激活态影响），方案在 rime 里（不影响其它应用），
+停用是 fcitx5 层（**停用时 rime 收不到键，方案与中英热键都不生效**，这是预期）。
+
+键位选择的理由（都踩过）：
+
+- **`F4` 是方案选单唯一入口。** 上游 rime-ice 一次绑了 `F4`/`Control+grave`/`Control+Shift+grave`，
+  而 `Control+grave` 与 VS Code 的终端开关、JetBrains 的 Quick switch scheme 直接冲突——误触一次就多开一个终端，
+  所以只留 `F4`（`catalog.SwitcherHotkeys`）。
+- **`Ctrl+Space` 做 fcitx5 触发键**（中文输入法的传统键，fcitx4/Windows/搜狗一致）。它唯一的冲突是 herdr 的前缀，
+  而这个冲突**在配置层消掉**：Omarchy 出厂给 herdr `prefix = "ctrl+space"`（
+  `/usr/share/omarchy/config/herdr/config.toml:18`），把它改成 `ctrl+b`（herdr 内置默认、tmux 习惯）后两边不再抢。其余候选都被占：`Super+space`/`Super+Alt+space`/`Super+Ctrl+space` 是 Omarchy 菜单与
+  背景切换（且合成器先接 `SUPER+*`，输入法永远看不到），`Alt+space` 是"窗口菜单"的通用约定，
+  `Ctrl+\`` 属编辑器。
+- **本仓库只负责 fcitx5 侧的触发键**；herdr 前缀属于宿主工具配置，不在这里管理。
+- **但冲突要能看见**（新装 Omarchy 就是冲突现场：出厂 herdr = `ctrl+space`）。`observe.HerdrPrefix` 按 herdr 自己的解析顺序
+  读 `$HERDR_CONFIG_PATH` → `~/.config/herdr/config.toml`（缺省即 herdr 内置 `ctrl+b`，无冲突），
+  `HerdrConflict` 与受管触发键按 `Ctrl`/`Control` 归一比较，命中结果进 `status`/`doctor` 的告警行、写触发键时也打一条
+  `[警告]`。**只告警、不改别人的配置、也不偷偷换键**——换哪一边是用户的决定。
+- 单 IM 时触发键 = 开/停用；**停用后 rime 收不到键，Shift 与 F4 都不生效**（预期）。
 
 ---
 
@@ -248,20 +269,33 @@ L2 解压规则：
 
 ### 5.4 受管 vs 不受管（手感项）
 
-`default.custom.yaml` 里的 `key_binder` / `ascii_composer` **不一定打进方案**——`double_pinyin.schema.yaml` 用自己的 `key_binder`，要生效必须写方案层 custom。裸 Shift 切中英在 Rime/fcitx5 没有可靠开箱方案。
+**受管手感项（默认集，随收敛生效）：**
 
-**v1 受管（写入 `default.custom.yaml`，随收敛生效）：**
+写入 `default.custom.yaml`（`ascii_composer` 与 `switcher` 都定义在 `default.yaml`，这里打得到）：
+
 - `menu/page_size: 9`（候选词个数，覆盖上游默认 5）
 - `,` `.` 翻页（`key_binder/bindings/+`：comma→`Page_Up`, period→`Page_Down`）
+- 中英切换：`ascii_composer/switch_key/Shift_L` **与** `Shift_R` = `commit_code`（左右 Shift 都「先把已打编码上屏，再切 `ascii_mode`」）；`Control_L/R` = `noop`（防 Ctrl 尾随误切）；`good_old_caps_lock: true`（CapsLock 只切大写）
+- `switcher/hotkeys: [F4]`（方案选单；`Control+grave` 家族被移除，理由见 §2.3）
+- `switcher/save_options: [ascii_punct, traditionalization, emoji, search_single_char]`（**不含 `full_shape`**）
 
-**仍不受管（用户可自己做非受管补丁）：**
-- `Shift_L: inline_ascii` / `commit_code`（Shift 中英切换）
-- `Control_L/R` / `Caps_Lock` / `good_old_caps_lock`
-- `ascii_punct` / `full_shape`
+写入**每个方案**的 `<schema>.custom.yaml`（`switches` 定义在 schema 里，`default.custom.yaml` 打不到）：
 
+- `switches/@4/reset: 0`（`full_shape` = 全半角，永远从**半角**起步）
+
+> 这两条必须**成对**：rime 规定「要记忆的开关不能设 `reset`」。根因是一次真实事故——锁屏前是「全角」，解锁时密码里的字符被按全角输入（`！` 而不是 `!`），PAM 校验失败进不去系统；而 `full_shape` 连字母数字都会变全角，所以「密码别放符号」并不构成兜底。
+
+**仍不受管（用户所有）：**
+
+- `ascii_punct`（中英标点）/ `traditionalization` / `emoji` / `search_single_char` 的**默认值**（只受管「是否跨会话记忆」，见上）
+- `page_size` 以外的菜单项、`,.` 以外的 `key_binder` 绑定
+- `Shift` / `Control` / `Caps` 之外的修饰键
+
+> 注：`switches/@4` 是**下标**选择器（rime patch 只能按下标选列表项）。`verify` 因此会读 `build/<schema>.schema.yaml` 断言该下标仍是 `full_shape`，上游重排就报「手感项（全半角）」未达标，而不是静默打到别的开关上。
+> 注：`switches/@4/reset` 只在 `Model=true`（生成 `<schema>.custom.yaml`）时落地；`--no-model` 下没有 grammar 补丁、也就没有这个文件 —— 但 `save_options` 已经把 `full_shape` 排除在记忆之外，所以仍从半角起步。
 > 注：`,.` 翻页写在 `default.custom.yaml` 对自带 `key_binder` 的方案**不一定生效**；若某方案失效需在方案层 custom 补。
 
-推荐分工（写入 README，不当作收敛目标）：`Alt+Space` 切 IM；`Shift` 用上游默认。
+推荐分工（三条轴，互不重叠）：中英 = 左右 `Shift`（引擎内，受管手感项）；方案 = `F4`；`Ctrl+Space` = 开/停用 fcitx5（profile 只有 `rime`，停用即走 XKB 布局输英文）。
 
 ---
 
@@ -288,13 +322,13 @@ restart **不触碰**主单元文件里的 ExecStart。失败不自动回滚，�
 
 Omarchy **原厂** herdr prefix 就是 Ctrl+Space，所以 **无条件** 写入触发键，不要「检测到 herdr 才写」（配置文件缺了反而漏改）。
 
-写 `~/.config/fcitx5/config` 的 `[Hotkey/TriggerKeys]`：受管键 `Alt+space` 写入优先位，**用户自加的触发键保留在后面（合并、不吞并）**。**INI 合并不整文件覆盖**（保留用户其它热键段）。键名白名单校验——裸 `Shift` 会被 fcitx5 **静默丢弃**。已含全部受管键则跳过。
+写 `~/.config/fcitx5/config` 的 `[Hotkey/TriggerKeys]`：受管键 `Ctrl+Space` 写入优先位，**用户自加的触发键保留在后面（合并、不吞并）**；被显式**移除**的是 `hotkey.PruneKeys` 里的 `Alt+space`（旧版本 ompinyin 写过、且是"窗口菜单"通用键），否则「换键」只在手工改过的机器上成立。键名按 `Ctrl`/`Control` 与大小写归一比较。单 IM（默认）时这个键就是"开/停用输入法"。**INI 合并不整文件覆盖**（保留用户其它热键段）。键名白名单校验——裸 `Shift` 会被 fcitx5 **静默丢弃**。已含全部受管键则跳过。
 
 ### 6.3 服务操作
 
 优先发现 `omarchy-fcitx5.service`，缺失回退通用 fcitx5。启停只走 §6.0 那一次，这里不再 stop。
 
-**start 前先清游离实例。** `org.fcitx.Fcitx5` 是唯一总线名，任何非单元 fcitx5 占着它时，单元自己 spawn 的实例会**启动即退出 0**（"another fcitx already running"），`Restart=always` 把它拖成 start-limit-hit 死循环；而 `Type=simple` 的 `systemctl start` 只要进程被 spawn 就返回 0 —— 调用方看到「启动成功」，主机却没有任何可用输入法（真实主机 bug，v1.2.2 修）。所以 `startUnit` 在**单元未激活**时先 `pkill -x fcitx5`，并**等它真的让出总线名**（`pkill` 只保证信号送出）再 start；单元已激活时绝不清——`Start` 同时是幂等的关窗调用，那样会把健康实例一起杀掉。
+**start 前先清游离实例。** `org.fcitx.Fcitx5` 是唯一总线名，任何非单元 fcitx5 占着它时，单元自己 spawn 的实例会**启动即退出 0**（"another fcitx already running"），`Restart=always` 把它拖成 start-limit-hit 死循环；而 `Type=simple` 的 `systemctl start` 只要进程被 spawn 就返回 0 —— 调用方看到「启动成功」，主机却没有任何可用输入法（案例见 `dev-notes.md` P5）。所以 `startUnit` 在**单元未激活**时先 `pkill -x fcitx5`，并**等它真的让出总线名**（`pkill` 只保证信号送出）再 start；单元已激活时绝不清——`Start` 同时是幂等的关窗调用，那样会把健康实例一起杀掉。
 
 这个游离实例**极易被自己造出来**：服务停止时任何 `fcitx5-remote` / 总线调用都会 D-Bus 激活一个新的 fcitx5。因此存活探测只用 `pgrep` 进程探针（`FcitxRunning` / `FcitxCount`），**绝不用 `fcitx5-remote` 或总线调用探测存活**（`theme` 的 `ReloadAddonConfig` 是唯一的例外，且它只在已知 fcitx5 在跑时才发）；`verify` 也只在单元已激活时才调 `RemoteState`。
 
@@ -343,7 +377,7 @@ fcitx5 SNI 的 `Id` = **`Fcitx`**（`Tray.qml` 用 `pinnedIds.indexOf(item.id)` 
 - 外壳没在跑时无法写 pin（下拉失败）。T1 容器走 `--os-override` 时本层会失败，属预期，T3/T4 才验图标。
 - `◀` 展开按钮只要有任何托盘项就渲染（空抽屉也显）。去掉空 `◀` 需 patch `Tray.qml`（系统文件、`omarchy update` 覆盖，**域外**）。
 - doctor：专用 drop-in 存在、`notificationitem` addon 已加载、`omarchy.tray.pinned` 数组含 `Fcitx`。缺任一项 = 未达终态。
-- **foot 内 IM 图标不刷新**：早期版本（Omarchy < 4.0.2）限，仅显示问题（打字/切换/候选均正常）；**Omarchy 4.0.2 已解除**（foot 内 `Alt+Space` 切中英，顶栏图标自动更新）。
+- **foot 内 IM 图标不刷新**：早期版本（Omarchy < 4.0.2）限，仅显示问题（打字/切换/候选均正常）；**Omarchy 4.0.2 已解除**（foot 内 `Ctrl+Space` 开关输入法、`Shift` 切中英，顶栏图标自动更新）。
 
 ### 6.5 环境变量红线与活目录
 
@@ -375,13 +409,15 @@ fcitx5 SNI 的 `Id` = **`Fcitx`**（`Tray.qml` 用 `pinnedIds.indexOf(item.id)` 
 
 **取值**：`dpi = round(96 × scale)`（X 资源只收整数）。96 是 1x 基准的三重约定——CSS 参考像素、X11 历史缺省 DPI、Pango/fontconfig 缺省分辨率（面板真实 DPI 在逻辑缩放体系里用不上）；映射 1.0→96 / 1.25→120 / 1.5→144 / 1.6→154 / 1.75→168 / 2.0→192。`scale` 只读、逐级降级：① `hyprctl monitors -j` 聚焦屏实时值（能处理 `monitors.lua=auto`）；② `monitors.lua` 的 `omarchy_monitor_scale`；③ 沿用现有 `Xft.dpi`（首次无源按 96，不放大）。
 
-**落地**：`~/.Xresources` 仅行级拥有 marker 块中的 `Xft.dpi`，保留其余用户内容；不写 Hyprland 配置或 `classicui.conf`。发布单元 `ompinyin-x11-hidpi.service` 以**安装时解析的绝对二进制路径**（`os.Executable()`）为 `ExecStart`，不经 `/usr/bin/env`（systemd user 的 PATH 不含 `~/.local/bin`）；`DISPLAY` 从 graphical session 继承，**不硬编码 `:0`**（Hyprland 的 XWayland 编号不保证）。`ompinyin-x11-hidpi.path` 监听 `~/.config/hypr/monitors.lua`，缩放变化即重算重推（仅值变化时才重启 fcitx5，避免无谓打断输入）。发布决策在 L1 之后重新探测 X 会话，不复用 L1 前的 `X11Available` 快照（否则首次 opt-in 会跳过发布并在 L5 报「期望≠实际」）。opt-in 意图在收敛开始时就落盘（双向）：本轮即使 L5 失败，下一次裸 `install` 也不会把用户刚选的模式误判成相反意图（opt-in 被拆 / opt-out 被重开）。
+**落地**：`~/.Xresources` 仅行级拥有 marker 块中的 `Xft.dpi`，保留其余用户内容；不写 Hyprland 配置或 `classicui.conf`。发布单元 `ompinyin-x11-hidpi.service` 以**安装时解析的绝对二进制路径**（`os.Executable()`）为 `ExecStart`，不经 `/usr/bin/env`（systemd user 的 PATH 不含 `~/.local/bin`）。`DISPLAY` / `HYPRLAND_INSTANCE_SIGNATURE` 由 `x11-hidpi-apply` **在运行时向 `systemctl --user show-environment` 解析**（≤10s 轮询，见下），**既不继承、也不硬编码 `:0`**（Hyprland 的 XWayland 编号不保证）。`ompinyin-x11-hidpi.path` 监听 `~/.config/hypr/monitors.lua`，缩放变化即重算重推（仅值变化时才重启 fcitx5，避免无谓打断输入）。
+
+**`graphical-session.target` 不保证会话已就绪。** systemd 在单元启动时**冻结环境快照**，而 uwsm/Omarchy 往 manager 导入 `DISPLAY` 发生在之后，所以单元里 `DISPLAY` 是空的，`xrdb` 会报 `Can't open display ''`；`.path` 只监听 `monitors.lua`，这一跳失败就等于整个会话不发布。等待修不了冻结的快照，只能**向 manager 要**：`hidpi.ImportSessionEnv` 带 ≤10s 轮询，补全时打印实际补到的键；同样的解析让 `hyprctl` 拿到 `HYPRLAND_INSTANCE_SIGNATURE`，否则 `force_zero_scaling` 前置会退化成"按默认 true 猜"（读不到时另行告警）。发布决策在 L1 之后重新探测 X 会话，不复用 L1 前的 `X11Available` 快照；opt-in 意图在收敛开始时就落盘（双向），本轮即使 L5 失败也不会被下一次裸 `install` 反向解释。案例见 `dev-notes.md` P1。opt-in 意图在收敛开始时就落盘（双向）：本轮即使 L5 失败，下一次裸 `install` 也不会把用户刚选的模式误判成相反意图（opt-in 被拆 / opt-out 被重开）。
 
 撤销用 `install --no-x11-hidpi`：先 `disable --now` path 单元（防监视器变化再发布）→ 删两个 user 单元 → 移除受管块（空则删 `~/.Xresources`）；当前会话已发布的值保留到注销（`xrdb -load` 会清空用户整库，破坏性过大，不做运行时还原）。`ompinyin x11-hidpi-apply`（内部命令，不进 CLI 契约）是登录发布/缩放监听的私有入口：取与 `install` 相同的状态锁（避免第二个 stop 窗口），未 opt-in 时 no-op，防残留 enable 链接继续发布全局资源；重启 fcitx5 失败会把退出码降为失败（同 §6.0 的 stop 窗口守卫）。
 
 **`force_zero_scaling` 是前置。** Hyprland 的 `xwayland:force_zero_scaling` 决定 X11 窗口是否由合成器缩放：Omarchy 默认 `true`（`/usr/share/omarchy/default/hypr/envs.lua`）= **不由合成器缩放**，每个 toolkit 各自缩，X11 候选框才需要 `Xft.dpi`；若为 `false`（Hyprland 默认）= 合成器已把 X11 整体放大（像素化但尺寸对），此时发布 `Xft.dpi` 会让候选框与所有 X11 应用一起 4×，故本模式**自动失效**（no-op + 说明，不装包、不落文件、不发布）。fcitx5 侧没有更小的替代杠杆：`PerScreenDPI` 在 XWayland 上被源码强制忽略、`classicui.conf` 只有 Wayland 专用的 `ForceWaylandDPI`，而 `Font` 只放大文字——`XCBWindow::setScale(dpi/96)` 通过 `cairo_surface_set_device_scale` 缩放**整个候选窗口**（背景/边距/高亮/文字一起），所以 Font 不能替代它。
 
-**规则：一个框架只能有一个缩放权，禁止叠加。** `Xft.dpi` 的已知读者：fcitx5 XCBUI（目标）、Qt（`QXcbScreen::logicalDpi()` 直接返回 Xft.dpi；`QT_AUTO_SCREEN_SCALE_FACTOR=1` 时缩 2×，但任何显式 `QT_SCALE_FACTOR` 会再乘一次）、GTK（DPI 设置与 `GDK_SCALE` 可能叠加）、纯 Xft 应用（xterm 等，`Xft.dpi` 正是它们唯一可用的缩放）。启用本模式后必须清掉各 toolkit 的显式缩放因子；否则就是微信那种 4×。微信的 per-app 消解用 `QT_SCREEN_SCALE_FACTORS=2`：显式 screen factor **覆盖** DPI 派生因子（源码 `screenSubfactor()` 注释：factors from `QT_SCREEN_SCALE_FACTORS` takes precedence over the factor computed from platform plugin DPI），而不是叠加。
+**规则：一个框架只能有一个缩放权，禁止叠加。** `Xft.dpi` 的已知读者：fcitx5 XCBUI（目标）、Qt（`QXcbScreen::logicalDpi()` 直接返回 Xft.dpi；`QT_AUTO_SCREEN_SCALE_FACTOR=1` 时缩 2×，但任何显式 `QT_SCALE_FACTOR` 会再乘一次）、GTK（DPI 设置与 `GDK_SCALE` 可能叠加）、纯 Xft 应用（xterm 等，`Xft.dpi` 正是它们唯一可用的缩放）。**ompinyin 只诊断不代改**：发布时若会话里已有 `GDK_SCALE` / `GDK_DPI_SCALE` / `QT_SCALE_FACTOR`（Omarchy 自带的 `monitors.lua` 默认就写 `GDK_SCALE=2`），打 `[警告]` 说明叠加后果（GTK3 约 4×），由用户决定移除哪一边。启用本模式后必须清掉各 toolkit 的显式缩放因子；否则就是微信那种 4×。微信的 per-app 消解用 `QT_SCREEN_SCALE_FACTORS=2`：显式 screen factor **覆盖** DPI 派生因子（源码 `screenSubfactor()` 注释：factors from `QT_SCREEN_SCALE_FACTORS` takes precedence over the factor computed from platform plugin DPI），而不是叠加。
 
 **doctor 检查项（默认也展示，只读）**：根窗口值是否 `== round(96 × scale)`（未 opt-in 也报 scale / 期望 / 实际与残留产物）；受管块与两个单元是否存在且内容正确；`~/.Xresources` 用户内容是否被破坏（只告警，不收敛）。
 
@@ -455,7 +491,7 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 | 真机验收 | 见 §15 T0–T4 金字塔 |
 | CI | gofmt / go vet / **golangci-lint**（`.golangci.yaml`：默认集 errcheck+govet+ineffassign+staticcheck+unused，加 gofmt formatter） / `go test -race` / build 冒烟 + `ompinyin version`；绝不在 CI 跑系统操作、绝不触网（tag 解析可注入 stub，本地资产目录可离线跑） |
 
-- **T0 的结构性盲区（评审教训）**：fixture 把 `$TMPDIR`、systemd、D-Bus、信号时序全部归一化，所以「真实主机交互」类缺陷——跨文件系统 `rename`、游离 fcitx5、`Restart=always` 抖动、SIGINT 落在 stop 窗口——在 T0 里**不可能复现**。这不是覆盖率能补的洞。两条出路都要用：① §15 T4 的 `make smoke`；② 在那类 seam 上**主动造出异常环境**（先例：`selfup` 的 EXDEV 回归用 `t.Setenv("TMPDIR", <另一挂载点>)` 复现，见 `TestApplyAcrossFilesystems`——它跑在前一版代码上会失败）。
+- **T0 的结构性盲区**：fixture 把 `$TMPDIR`、systemd、D-Bus、信号时序全部归一化，所以"真实主机交互"类缺陷（跨文件系统 `rename`、游离 fcitx5、`Restart=always` 抖动、SIGINT 落在 stop 窗口）在 T0 里**不可能复现**，这不是覆盖率能补的洞。两条出路都要用：① §15 的 `make smoke`；② 在那类 seam 上**主动造出异常环境**（先例：`t.Setenv("TMPDIR", <另一挂载点>)` 复现 EXDEV，见 `TestApplyAcrossFilesystems`）。
 
 ---
 
@@ -468,7 +504,7 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 
 ## 11. 交付范围与后续
 
-v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 候选框主题 + 可选 X11 HiDPI 兼容模式 + 状态清单 + 锁/原子写 + 断点续传 + golden 单测。后续（非阻塞）：Omarchy 插件薄壳；`uninstall --purge-packages` 待决（倾向不加，见 §12）。
+当前交付范围 = 五层收敛 + 全部 CLI + 候选框主题 + 可选 X11 HiDPI + 状态清单。未做/待决项（Omarchy 插件薄壳、`uninstall --purge-packages`）记在 `dev-notes.md` 的「待决」。
 
 ---
 
@@ -521,7 +557,7 @@ v1.0 覆盖：五层收敛 + 全部 CLI（含 `source`/`--self`）+ 候选框主
 | T3 QEMU/KVM 全新 Omarchy | 官方 ISO + qcow2 backing-file 基线快照 | 端到端：Wayland/Hyprland、IM 三态、herdr、F4、**顶栏图标可见** | 小时级 |
 | T4 真机幂等回归（零成本） | 已安装宿主 | ① 重跑全 `[跳过]`；② 游离实例自愈（`install` 清掉占着 `org.fcitx.Fcitx5` 的非单元实例并真正接管）；③ `update --self` **跨文件系统**替换 + `releases/latest` sha256；④ `--dsp zrm` 后两个 build schema 都有 grammar；⑤ 顶栏有图标；⑥ 备份可回滚；⑦ SIGINT 落在 stop 窗口后 fcitx5 仍被拉起 | 零 |
 
-- **T4 不是一段文档，是 `make smoke`**（`scripts/t4-smoke.sh`，~100s）：跑 ① ② ③ + `doctor`；④⑤⑥⑦ 仍手动（把信号时序脚本化会变成 flaky 测试，比没有更坏）。它**必须跑在真机**并会短暂重启 fcitx5，所以**打 tag 前跑**。这一层存在的唯一理由就是 §9 说的 T0 结构性盲区：`TestApplyUpgrades` 一直「覆盖」着自升级替换路径，只是把 exe 和暂存目录都放在同一个 `$TMPDIR` 下，恰好是 `rename(2)` 唯一合法的拓扑，于是 v1.2.1–v1.2.2 的 `update --self` 对所有人都坏。
+- **T4 不是一段文档，是 `make smoke`**（`scripts/t4-smoke.sh`，~100s）：跑 ① ② ③ + `doctor`；④⑤⑥⑦ 仍手动（把信号时序脚本化会变成 flaky 测试，比没有更坏）。它**必须跑在真机**并会短暂重启 fcitx5，所以**打 tag 前跑**。存在理由就是 §9 的 T0 结构性盲区。
 
 - T3：`qemu-img create -b <clean>.qcow2` 基线快照，每轮副本，装坏即弃；T4 前置为 git checkpoint / 备份 `$RIME` 与 `shell.json`。
 - **T1/T2（非 Omarchy 容器）**：预检需 `--os-override`（绕过 `ID=arch`）**且**在 PATH 放一个 `omarchy` 替身——`omarchy` 不是 pacman 包，缺了预检直接失败（§7）；`fcitx5-remote`/`rime_deployer` 由 L1 安装（预检只告警）。

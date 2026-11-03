@@ -1,146 +1,110 @@
 # ompinyin
 
-> 在 **Omarchy** 上**一键部署中文输入法**：**雾凇全拼 + 万象整句模型 + 顶栏输入法图标 + 候选框跟随主题配色**，双拼按需可选。
+**一条命令，把 Omarchy 上的中文输入法装好。** 雾凇全拼（双拼可选）+ 万象 LMDG 语法模型 +
+顶栏输入法图标 + 候选框跟随系统主题。装完就能打字；随时重跑；随时撤销。
 
-`ompinyin` 把「装好中文输入法」变成一条**可反复执行**的命令：声明目标终态（全拼 + 万象 + 顶栏图标 + 候选框跟随主题）→ 采集现状 → 只改不同部分。随时重跑、`--dry-run` 预览、`uninstall` 回滚。
-
-```text
-安装后你会得到：
-☑ 雾凇拼音（全拼）        —— 默认输入方案
-☑ 万象 LMDG 整句模型     —— 智能整句联想（约 420MB）
-☑ 顶栏输入法图标         —— 常驻顶栏，无需点「◀」
-☑ 候选框跟随 Omarchy 主题 —— 圆角候选框自动配当前主题色，换主题即刷新
-双拼可选：--dsp zrm | flypy | mspy | sogou | abc | ziguang | jiajia
+```bash
+ompinyin install
 ```
 
-## 开始前
-
-- **Omarchy**（Arch + Hyprland + Wayland）；其它发行版会被预检拒绝。
-- 用**普通用户**跑，别用 root（只有 pacman 会 `sudo`）。
-- 万象模型约 **420MB**，预检要求约 **≥2GB** 空闲留白。
+它做的事：装好 fcitx5 + rime 和相关包 → 下载雾凇词库与万象模型 → 生成受管的 rime 配置 →
+接上顶栏图标和候选框主题 → 自检一遍告诉你哪里不对。**只改和"应该的样子"不一样的地方**，所以
+重复跑不会捣乱，`--dry-run` 可以先看它打算动什么。
 
 ## 安装
-
-### 方式一：GitHub Releases 下载（推荐）
 
 ```bash
 curl -fsSL -o ompinyin https://github.com/ProjectAILeap/ompinyin/releases/latest/download/ompinyin_linux_amd64
 install -Dm755 ompinyin ~/.local/bin/ompinyin
-ompinyin --help   # 验证
+ompinyin --help          # 验证
 ```
 
-> `ompinyin_linux_amd64`（x86_64）／`ompinyin_linux_arm64`，静态链接零依赖；下载后可用 `sha256sum` 对照 `checksums.txt`。
+- 单个静态二进制，零依赖（x86_64 用 `ompinyin_linux_amd64`，ARM 用 `ompinyin_linux_arm64`），可对照
+  `checksums.txt` 校验 sha256。
+- 从源码：`git clone … && make build && install -Dm755 bin/ompinyin ~/.local/bin/ompinyin`。
+- 需要 **Arch/Omarchy**（脚本会检查 `ID=omarchy`）；只有装包那一步会用 `sudo`，**别用 root 跑 ompinyin 本身**。
+- 想指定国内镜像装包：`ompinyin source` 后重跑。
 
-**GitHub 直连受限？** 在 URL 前拼加速代理前缀（如 `https://gh-proxy.com/`）。本体仅 ~7MB 静态二进制；更重的雾凇包 + 万象模型安装时走 `--mirror cn` 国内镜像，不依赖 GitHub。
+## 开始使用
 
-### 方式二：源码构建（仅需 Go）
+装完直接能打中文。三个键记住就够：
 
-```bash
-git clone https://github.com/ProjectAILeap/ompinyin.git
-cd ompinyin && make build && sudo mv bin/ompinyin /usr/local/bin/ompinyin
-```
+| 我想 | 按键 |
+|---|---|
+| 打中文 | 直接打（默认雾凇全拼） |
+| 临时打英文 | 按一下 **Shift**（正在打的编码会先上屏） |
+| 整体关掉输入法 | **Ctrl+Space**（再按回来） |
+| 换方案（全拼 ↔ 双拼） | **F4**，在弹出的「方案选单」里选 |
 
-## 快速开始
+三个键互不干扰：Shift 只管中英（候选框照常），Ctrl+Space 关掉输入法后 Shift/F4 都不生效，F4 只换方案。
 
-```bash
-ompinyin install --dry-run --json    # ① 预览计划（不改动）
-ompinyin install -y                   # ② 执行：全拼 + 万象 + 顶栏图标 + 国内镜像优先
-ompinyin status && ompinyin doctor    # ③ 体检：应无差异、全通过
-```
-
-> **幂等**：已收敛的机器重跑 `install` 零副作用——不重下、不重写、不开 stop 窗口、不建备份目录。每一步都能先 `--dry-run` 预览；`uninstall` 可逆。
-> **装完先确认**：`Alt+Space` 开/关中文；`F4` 弹出 Rime 方案选单（切方案 + 调简繁 / 标点 / 全半角）。
-
-## 装完就能用：两层切换
-
-| 层 | 对象 | 切换方式 | 用途 |
-|---|---|---|---|
-| fcitx5 输入法（IM） | `keyboard-us` ↔ `rime` | `Alt+Space` / 顶栏图标 | 切「中 / 英」 |
-| Rime 方案选单 | `rime_ice` / `double_pinyin` / … + 开关 | **F4** / 顶栏图标右键 | 切方案；调简繁 / 中英标点 / 全半角 / emoji |
-
-- 方案与开关都在 **F4**（Rime 方案选单）里；别用 `fcitx5-remote -s rime_ice`（它切的是 IM 层）。
-- 默认只装全拼时方案只有一项，`--dsp` 加了双拼后 F4 才有第二套方案——但开关（简繁 / 中英标点 / 全半角 / emoji）**始终在**。
-- 顶栏图标切到 rime 后，右键菜单也能调这些开关（简繁 / 中英标点 / 全半角），与 F4 等价。
-- 候选词每页 9 个，`,` / `.` 翻页。
-
-## 候选框跟随 Omarchy 主题
-
-安装后 fcitx5 候选框（顶栏输入法图标之外的候选词窗口）**自动**采用当前 Omarchy 主题配色：深色圆角面板 + 主题 accent 高亮选中候选，对比色文字自动计算（亮 accent 配深字、暗 accent 配浅字），换主题即自动刷新，无需重启。
-
-- 实现：`classicui.conf` 指向 `omarchy` 主题 + `theme-set.d/fcitx5-theme` 钩子（换主题触发生成 + 热重载，生成目录见下方「关键路径」）。
-- 都是受管文件：手改会在下次收敛时按所有者协议提示（确认后先备份再覆盖）；`uninstall` 一并还原默认候选框。
-- 面板质感想再亮一档：把钩子里的 `bg` 从 `background` 换成 `lighter_background`。
+顶栏会有一个输入法图标，显示当前是中文还是英文状态。
 
 ## 常用命令
 
-| 目标 | 命令 |
-|---|---|
-| 第一次装（默认全拼） | `ompinyin install` |
-| 加一种双拼 | `ompinyin switch --dsp [zrm\|flypy\|mspy\|sogou\|abc\|ziguang\|jiajia]` |
-| 让双拼当默认 | `ompinyin switch --dsp zrm --dsp-default` |
-| 只要双拼、去掉全拼 | `ompinyin switch --dsp zrm --no-quanpin` |
-| 去掉双拼 / 全拼做默认 | `ompinyin switch --dsp none` / `ompinyin switch --full` |
-| 不要 420MB 模型 | `ompinyin install --no-model`（`--model` 重新启用） |
-| 修复已验证的旧 X11 候选框过小 | `ompinyin install --x11-hidpi`（默认只诊断，见「已知问题」） |
-| 撤销 X11 HiDPI 兼容模式 | `ompinyin install --no-x11-hidpi`（移除受管块与缩放监听） |
-| 刷新数据到最新 | `ompinyin update`（`--self` 一并升级程序） |
-| 装包失败 / 镜像慢 | `ompinyin source` 后重跑 `install` |
-| 看状态差异 / 体检 | `ompinyin status` / `ompinyin doctor` |
-| 清缓存 / 彻底移除 | `ompinyin clean --legacy` / `ompinyin uninstall` |
-| 机器可读输出 | `status --json` / `doctor --json` ・ `--dry-run --json` |
+```bash
+ompinyin doctor                  # 体检（只读）：服务/输入法状态/顶栏/候选框主题/缩放
+ompinyin status                  # 与"应该有"的差异（只读）
+ompinyin install                 # 收敛（幂等）
+ompinyin install --dry-run       # 只预览，不动手
+ompinyin install --dsp zrm       # 全拼 + 自然码双拼
+ompinyin update                  # 刷新雾凇/万象到最新并重编译
+ompinyin update --self           # 只升级 ompinyin 自己
+ompinyin uninstall               # 撤销全部受管产物（保留你的 rime 词库）
+```
 
-> **`update --self`** 会备份旧二进制、对照 `checksums.txt` 校 sha256 再原子替换；装在 `~/.local/bin` 免权，装在 `/usr/local/bin` 等需 sudo 路径会尝试 `sudo`（无 tty 用 `sudo -n`）。
+退出码：`0` 成功、`1` 执行失败、`2` 用法错误、`3` 预检不过（不是 Omarchy / 磁盘不足 / 缺工具）。
 
-## 常用选项
-
-| 选项 | 作用 |
-|---|---|
-| `--yes` / `-y` | 全程免交互（覆盖前先备份用户改过的文件） |
-| `--dry-run` | 只预览计划，不改动 |
-| `--dsp zrm` | 加一种双拼；`--dsp-default` 让其为默认，`--no-quanpin` 去掉全拼，`--dsp none` 去掉双拼 |
-| `--no-model` / `-s` | 不下载万象整句模型；`--model` 重新启用 |
-| `--x11-hidpi` / `--no-x11-hidpi` | 显式开启 / 关闭旧 X11 ClassicUI 候选框缩放兼容模式；默认关闭 |
-| `--mirror cn / auto / ghproxy / upstream / URL` | 下载源（默认 `cn`：国内镜像优先，失败自动回退官方） |
-| `-b` / `--full-backup` | 备份整个 rime + fcitx5 配置目录（而不只受管文件） |
-| `--mirror <本地目录>` | **离线安装**：指向放好 `rime-ice-full-stable.zip` / `wanxiang-lts-zh-hans.gram` 的目录（也支持 `file://`） |
-
-双拼取值：`zrm` 自然码 · `flypy` 小鹤 · `mspy` 微软 · `sogou` 搜狗 · `abc` 智能 ABC · `ziguang` 紫光 · `jiajia` 拼音加加。**最多一种**，且 `--dsp-default` / `--no-quanpin` 必须与 `--dsp` 同用。
-
-> **终态继承**：`install` 以 `state.json` 里记录的**上次终态为基线**，只有你**显式给出**的选项会覆盖它——重跑 `install` 不会静默删掉之前选的 `--dsp` / `--no-model` / `--channel`。去掉双拼用 `switch --dsp none`；恢复模型用 `install --model`。
-
-> **下载源 `--mirror`** 只作用于 L2 数据资产，管不到 L1 pacman 包。默认 `cn`（NJU/CNB 镜像）是为大陆无代理用户——GitHub 上游对 420MB 万象模型会限速/超时；海外或已有代理才用 `auto`/`upstream`。L1 包（`fcitx5-rime` / `fcitx5-configtool` / `fcitx5-gtk`）在 `extra` 仓库，镜像由 `/etc/pacman.d/mirrorlist` 决定，ompinyin 不接管。
-
-## 已知问题
-
-- **L1 pacman 安装失败（多为镜像/网络）**：Omarchy 官方镜像走 Cloudflare CDN，直连有时可能超时。先 `ompinyin source`（默认 `--preset cn`，把 `core`/`extra` 指向国内 stock-Arch 镜像并保留 Omarchy 回退，先备份再写入，工具内部 sudo）后重跑 `install`。**仅用 `pacman -Sy` / `-S --needed`，别跑 `pacman -Syu`**（会漂移 stable 锁版本）；`[omarchy]` 仓库无国内镜像，仍需连通官方 `pkgs.omarchy.org`。`--preset upstream` 一键还原。
-- **首次安装会接管 `default.custom.yaml`**：已有 rime 配置时把它替换为受管内容（候选数 9、`,` `.` 翻页；`Shift` 等手感设置消失），改动前备份到 `backup-<ts>/`。
-- **手改受管文件会被覆盖**：由工具生成的文件请写独立的非受管补丁，别手改。
-- **Foot终端全屏输入时可能出现候选框不可见**：Hyprland 渲染器问题，本工具范围外（桌面窗口正常）。
-- **候选框主题依赖当前 Omarchy 主题颜色**（`~/.local/state/omarchy/current/theme/colors.toml`）：它不存在时（极少见）候选框保持 fcitx5 默认外观，`ompinyin doctor` 会提示「候选框主题」未达标。
-- **X11 HiDPI（默认只诊断，非默认项）**：`--x11-hidpi` 写**全局** XWayland `Xft.dpi`，可修微信等旧 X11 应用的 fcitx5 候选框过小；但其它读该资源的 X11/Electron 应用可能二次放大。`doctor`/`status` 只展示 X11 缩放与 `Xft.dpi` 现状、不改文件——先用 `doctor` 确认候选框确实过小，再 `install --x11-hidpi`。
-  - **一个框架只能有一个缩放权**：启用后清掉各 toolkit 的显式缩放因子——微信用 `QT_SCREEN_SCALE_FACTORS=2`（覆盖 DPI 派生因子），别与 `QT_SCALE_FACTOR` 并用；也不要用「删掉全局 `Xft.dpi`」修单个应用。
-  - 多屏混合 DPI 没有单值解，不做随焦点切换；撤销用 `install --no-x11-hidpi`（当前会话已发布的值保留到注销）。
-  - 前置是 Omarchy 默认的 `xwayland:force_zero_scaling=true`；为 `false`（合成器已缩 X11）时本模式自动 no-op。细节见 [DESIGN §6.7](DESIGN.md#67-可选-x11-hidpi-兼容模式classicui-候选框)。
-
-## 关键路径
-
-| 内容 | 路径 |
-|---|---|
-| Rime 数据目录 | `~/.local/share/fcitx5/rime` |
-| fcitx5 配置 | `~/.config/fcitx5/` |
-| 候选框主题钩子 / 生成目录 | `~/.config/omarchy/hooks/theme-set.d/` ・ `~/.local/share/fcitx5/themes/omarchy/` |
-| 资产缓存 | `~/.cache/ompinyin/` |
-| 状态清单 | `~/.local/state/ompinyin/state.json` |
-
-> **AI / Agent 装机（可选）**：想让 agent 帮你装 / 修 / 诊断，可用运维助手 skill（`.agents/skills/ompinyin-install/SKILL.md`，含候选框大小与 X11/微信 HiDPI 二次放大排障）。手动装照上方「快速开始」即可。
-
-## 开发 / License
+## 双拼
 
 ```bash
-make build   # 编译 cmd/ompinyin → bin/ompinyin
-make test    # go test -race ./...
-make lint    # golangci-lint run --timeout 5m ./...
-make fmt     # gofmt -w .
+ompinyin install --dsp zrm                 # 全拼 + 自然码（默认主方案仍是全拼）
+ompinyin install --dsp zrm --no-quanpin    # 只要双拼
+ompinyin install --dsp flypy --dsp-default # 小鹤双拼作为默认方案
 ```
+
+布局：`zrm` 自然码 · `flypy` 小鹤 · `mspy` 微软 · `sogou` 搜狗 · `abc` 智能 ABC · `ziguang` 紫光 · `jiajia` 拼音加加。
+**最多一个双拼**；切换用 F4。
+
+## 旧 X11 应用里的候选框偏小？（可选）
+
+微信、百度网盘这类 XWayland 程序用的是 fcitx5 的 X11 候选窗，它只认一个全局值 `Xft.dpi`。
+ompinyin 默认**只诊断不修改**（它是全局的，可能影响别的应用）。确认候选框确实太小后：
+
+```bash
+ompinyin install --x11-hidpi     # 写 Xft.dpi=192，并装登录发布/缩放跟随的用户单元
+ompinyin install --no-x11-hidpi  # 撤销
+```
+
+开了之后如果**某个应用反而变大（约 4 倍）**，说明它同时受两套缩放控制（常见：系统设了 `GDK_SCALE=2`）。
+`ompinyin doctor` 会点出来，按 [`docs/qa.md`](./docs/qa.md) 里的说明二选一。
+
+## 遇到问题
+
+先跑这两条（都只读，不会改任何东西），把输出贴给维护者即可：
+
+```bash
+ompinyin status
+ompinyin doctor
+```
+
+高频问题直接看 [`docs/qa.md`](./docs/qa.md)：打不出中文、候选框太小、某个应用字太大、
+顶栏没有图标、锁屏密码不对、Ctrl+Space 没反应、改的配置又变回去了、装包太慢……
+
+用 agent 装机/排障：`.agents/skills/ompinyin-install/SKILL.md`（agent 执行手册）。
+
+## 开发
+
+```bash
+make build   # → bin/ompinyin（版本由 git describe 注入）
+make test    # go test -race ./...
+make lint    # golangci-lint（硬门槛）
+make smoke   # 真机预检：会短暂重启 fcitx5，打 tag 前必跑
+```
+
+文档：[`docs/design.md`](./docs/design.md) 设计方案（§N 引用）· [`docs/dev-notes.md`](./docs/dev-notes.md)
+决策与开发问题 · [`docs/qa.md`](./docs/qa.md) 用户问答。仓库约定见 [`AGENTS.md`](./AGENTS.md)。
+
+## License
 
 [MIT](./LICENSE)

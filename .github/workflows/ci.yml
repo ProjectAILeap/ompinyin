@@ -33,4 +33,4 @@ jobs:
       - name: version smoke
         run: ./bin/ompinyin version
       # 绝不在 CI 跑系统操作（§9）：T0 假宿主单测覆盖约 65% 语句，
-      # 真机验收（T3/T4）由本机 checklist 承担，见 DESIGN.md §15。
+      # 真机验收（T3/T4）由本机 checklist 承担，见 docs/design.md §15。
