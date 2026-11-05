@@ -1,29 +1,27 @@
-// Package theme implements the L4 candidate-window theming (§6.6): the fcitx5
-// classicui.conf plus the omarchy theme-set hook that make the candidate
-// window follow the current Omarchy theme.
-//
-// Ownership split (the hook is the single source of the color mapping):
+// Package theme implements the L4 candidate-window theming (§6.6) after the
+// Omarchy 4.5 hand-over: ompinyin owns the classicui.conf KEYS, Omarchy owns
+// the colors.
 //
 //   - ompinyin owns (ledger-tracked, whole-file): classicui.conf
-//     (Theme=omarchy …) and the hook script below; both get the managed
-//     header and the §5.1 ownership protocol.
-//   - the HOOK owns the generated theme dir
-//     ~/.local/share/fcitx5/themes/omarchy (SVGs + theme.conf read from the
-//     current colors.toml). It runs on every `omarchy theme set`, so the
-//     colors follow the theme without ompinyin re-running; ompinyin also runs
-//     it once at converge time so the first install applies immediately.
-//     The dir is NOT ledger-tracked (its bytes legitimately change whenever
-//     the user switches theme); uninstall deletes it explicitly.
+//     (Theme=omarchy / UseDarkTheme=False / UseAccentColor=False + the UI font),
+//     key-scoped like ~/.Xresources is line-scoped (§5.1).
+//   - Omarchy owns the theme itself: `default/themed/fcitx5-theme.conf.tpl` →
+//     `omarchy-theme-set-fcitx5` writes ~/.local/share/fcitx5/themes/omarchy and
+//     points classicui at it on every `omarchy theme set`. ompinyin used to
+//     generate that directory from a theme-set hook; the two writers raced on
+//     the same files (docs/dev-notes.md P10), so convergence now RETIRES our
+//     hook and the two SVGs only we ever wrote (RetireArtifacts).
 //
 // Reload: fcitx5 must be told to re-read the addon config. `fcitx5-remote -r`
 // only reloads the GLOBAL config — it does NOT re-read conf/classicui.conf or
-// the theme dir (verified on host: after -r the panel still showed the old
-// theme; after ReloadAddonConfig("classicui") it switched). The DBus method
+// the theme (verified on host: after -r the panel still showed the old theme;
+// after ReloadAddonConfig("classicui") it switched). The DBus method
 // org.fcitx.Fcitx.Controller1.ReloadAddonConfig is the same one
 // fcitx5-configtool uses, and it hot-swaps the theme without restarting fcitx5.
 package theme
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -40,11 +38,18 @@ import (
 // basename key space and out of patches.OrphanFiles (basename != rel).
 const (
 	ConfRelPath = ".config/fcitx5/conf/classicui.conf"
+	// HookRelPath is the theme-set hook ompinyin USED to install. It is kept as
+	// a path (not as content) so converge can retire it and drop its ledger
+	// entry — a host upgraded from <=1.3 still carries the file.
 	HookRelPath = ".config/omarchy/hooks/theme-set.d/fcitx5-theme"
-	ThemeDirRel = ".local/share/fcitx5/themes/omarchy"
-	// ThemeName is the fcitx5 theme name the generated dir provides.
+	themeDirRel = ".local/share/fcitx5/themes/omarchy"
+	// ThemeName is the fcitx5 theme name Omarchy's generator provides.
 	ThemeName = "omarchy"
 )
+
+// retiredFiles are the files ONLY ompinyin's old generator wrote inside
+// themeDirRel. Omarchy's own theme.conf and symlinks are never touched.
+var retiredFiles = []string{"background.svg", "highlight.svg"}
 
 // ConfPath returns the absolute classicui.conf path.
 func ConfPath(home string) string {
@@ -54,11 +59,6 @@ func ConfPath(home string) string {
 // HookPath returns the absolute theme-set hook path.
 func HookPath(home string) string {
 	return filepath.Join(home, filepath.FromSlash(HookRelPath))
-}
-
-// ThemeDir returns the absolute generated theme dir.
-func ThemeDir(home string) string {
-	return filepath.Join(home, filepath.FromSlash(ThemeDirRel))
 }
 
 // DefaultFont is the UI-font fallback when omarchy-font-current is missing.
@@ -174,31 +174,19 @@ func ReadConfContent(home string) string {
 	return string(b)
 }
 
-// HookContent renders the managed theme-set hook (whole file). It regenerates
-// ~/.local/share/fcitx5/themes/omarchy from the current Omarchy colors.toml,
-// then hot-reloads fcitx5. The managed header doubles as a bash `#` comment so
-// the script stays a valid hook for omarchy-hook (which runs `bash <file>`).
-func HookContent() string {
-	return catalog.ManagedHeader() + "\n" + hookScript
-}
-
 // Observed is the read-only snapshot of the theming terminal state.
 type Observed struct {
 	// ConfOK: classicui.conf exists with the managed header and points at
 	// ThemeName. ConfEqual adds "bytes already equal the desired content".
 	ConfOK, ConfEqual bool
-	// HookOK: the hook exists with the managed header. HookEqual adds
-	// "bytes already equal".
-	HookOK, HookEqual bool
-	// DirOK: the generated theme dir is populated (theme.conf present).
-	DirOK bool
+	// HookOK: the RETIRED theme-set hook still exists (residue from <=1.3; the
+	// terminal state no longer contains it).
+	HookOK bool
 }
 
 // Observe probes the theming terminal state (read-only).
 func Observe(home string, st *state.State) Observed {
 	var o Observed
-	o.DirOK = ThemeDirPopulated(home)
-
 	if b, err := os.ReadFile(ConfPath(home)); err == nil {
 		s := string(b)
 		o.ConfOK = strings.Contains(s, catalog.ManagedHeader()) &&
@@ -206,290 +194,66 @@ func Observe(home string, st *state.State) Observed {
 			strings.Contains(s, "UseDarkTheme=False")
 		o.ConfEqual = s == ConfContent(s, CurrentFont())
 	}
-	if b, err := os.ReadFile(HookPath(home)); err == nil {
-		s := string(b)
-		o.HookOK = strings.Contains(s, catalog.ManagedHeader())
-		o.HookEqual = s == HookContent()
+	if _, err := os.Stat(HookPath(home)); err == nil {
+		o.HookOK = true
 	}
 	return o
 }
 
-// ThemeDirPopulated reports whether the generated theme is in place.
-func ThemeDirPopulated(home string) bool {
-	if _, err := os.Stat(filepath.Join(ThemeDir(home), "theme.conf")); err != nil {
-		return false
+// ArtifactsPresent reports whether any retired artifact is still on disk (the
+// hook or one of the two SVGs only ompinyin's old generator wrote).
+func ArtifactsPresent(home string) bool {
+	if _, err := os.Stat(HookPath(home)); err == nil {
+		return true
 	}
-	ents, err := os.ReadDir(ThemeDir(home))
-	return err == nil && len(ents) > 0
-}
-
-// Generate runs the installed hook once so the CURRENT Omarchy theme is
-// applied immediately (install-time application; afterwards the hook also runs
-// on every `omarchy theme set`). It fails when the hook cannot produce the
-// theme dir — the current Omarchy theme colors (colors.toml) are missing, so
-// fcitx5 would silently fall back to the default white panel.
-func Generate(home string) error {
-	if err := Run("bash", HookPath(home)); err != nil {
-		return err
+	for _, name := range retiredFiles {
+		if _, err := os.Stat(filepath.Join(home, filepath.FromSlash(themeDirRel), name)); err == nil {
+			return true
+		}
 	}
-	if !ThemeDirPopulated(home) {
-		return fmt.Errorf("主题目录未生成（当前 Omarchy 主题颜色不可用？需要 ~/.local/state/omarchy/current/theme/colors.toml 与 omarchy-theme-color）")
+	return false
+}
+
+// RetireArtifacts deletes what ompinyin's own generator produced and the
+// terminal state no longer contains: the theme-set hook and the two SVGs.
+// theme.conf and Omarchy's symlinks are NOT ours and stay. Idempotent; returns
+// the paths it actually removed so converge can report one honest line.
+func RetireArtifacts(home string) ([]string, error) {
+	paths := []string{HookPath(home)}
+	for _, name := range retiredFiles {
+		paths = append(paths, filepath.Join(home, filepath.FromSlash(themeDirRel), name))
 	}
-	return nil
+	var removed []string
+	for _, p := range paths {
+		if err := os.Remove(p); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return removed, err
+		}
+		removed = append(removed, p)
+	}
+	return removed, nil
 }
 
-// hookScript is the runtime theme generator shipped by ompinyin. It is the
-// single source of the color-mapping logic (theme.conf keys + SVG art + the
-// luminance-based contrast text); ompinyin itself only installs it and runs it
-// via Generate. Keep it in sync with the fcitx5 theme engine's field mapping
-// (InputPanel/Background → panel; InputPanel/Highlight → selected candidate;
-// HighlightCandidateColor → text on the highlight …) — see DESIGN §6.6.
-const hookScript = `# fcitx5 candidate-window theme generator: follows the current Omarchy theme
-# Triggered by: omarchy theme set <name> (theme-set hook, run by omarchy-hook)
-# Manual: bash ${HOME}/.config/omarchy/hooks/theme-set.d/fcitx5-theme [theme-slug]
-set -euo pipefail
+// ErrNoUpstream means the host has no omarchy-theme-set-fcitx5 (pre-4.5): there
+// is nothing to hand over, and classicui points fcitx5 at a theme name that does
+// not exist there, so the candidate window falls back to its default look.
+// Callers treat it as a note, never a failure.
+var ErrNoUpstream = errors.New("omarchy-theme-set-fcitx5 不存在（Omarchy < 4.5）")
 
-STATE_DIR="$HOME/.local/state/omarchy/current"
-COLORS="$STATE_DIR/theme/colors.toml"
-THEME_OUT="$HOME/.local/share/fcitx5/themes/omarchy"
-THEME_SLUG="${1:-$(cat "$STATE_DIR/theme.name" 2>/dev/null || echo unknown)}"
+// LookPath is the exec seam for probing the upstream generator.
+var LookPath = exec.LookPath
 
-# No current Omarchy theme colors: keep the default candidate window, exit quietly.
-[[ -f "$COLORS" ]] || exit 0
-command -v omarchy-theme-color >/dev/null 2>&1 || exit 0
-
-color() {
-  local value
-  value="$(omarchy-theme-color --file "$COLORS" "$1" 2>/dev/null || true)"
-  printf '%s' "${value:-$2}"
+// ApplyUpstream runs Omarchy's own fcitx5 theme generator: it reads
+// default/themed/fcitx5-theme.conf.tpl, writes
+// ~/.local/share/fcitx5/themes/omarchy and points classicui at it, so the
+// candidate window follows `omarchy theme set` without ompinyin in the loop
+// (adapt 4.5 §5). `--activate` applies the CURRENT theme immediately.
+func ApplyUpstream() error {
+	path, err := LookPath("omarchy-theme-set-fcitx5")
+	if err != nil {
+		return ErrNoUpstream
+	}
+	return Run(path, "--activate")
 }
-
-# Perceived brightness 0-255 (ITU-R BT.601).
-lum() {
-  local h="${1#\#}"
-  if [[ ! $h =~ ^[0-9A-Fa-f]{6}$ ]]; then
-    printf '0'
-    return
-  fi
-  printf '%s' "$(( (299 * 16#${h:0:2} + 587 * 16#${h:2:2} + 114 * 16#${h:4:2}) / 1000 ))"
-}
-
-bg="$(color background '#1e1e1e')"
-border="$(color lighter_background "$(color selection '#3c3836')")"
-fg="$(color foreground '#d4be98')"
-dim="$(color dark_foreground "$(color muted '#7c6f64')")"
-accent="$(color accent "$(color blue '#7daea3')")"
-inline_bg="$(color selection '#504945')"
-inline_fg="$(color bright_foreground "$fg")"
-
-# Contrast text on the accent highlight: light accent -> dark text, and vice
-# versa. Theme-relative where possible, hard guarantees otherwise.
-light_fg="$(color background '#f5f5f5')"
-if (( $(lum "$light_fg") < 150 )); then light_fg='#f5f5f5'; fi
-dark_fg="$(color darker_background '#161616')"
-if (( $(lum "$dark_fg") > 110 )); then dark_fg='#161616'; fi
-if (( $(lum "$accent") >= 150 )); then
-  accent_fg="$dark_fg"
-else
-  accent_fg="$light_fg"
-fi
-accent_dim="${accent_fg}b3"
-
-mkdir -p "$THEME_OUT"
-
-# Rounded 9-slice panel background (32x32, margin 12 -> corner radius 12).
-cat >"$THEME_OUT/background.svg" <<EOF
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-  <rect x="0.5" y="0.5" width="31" height="31" rx="12" ry="12" fill="$bg" stroke="$border" stroke-width="1"/>
-</svg>
-EOF
-
-# Rounded selected-candidate highlight (24x24, margin 6 -> corner radius 6).
-cat >"$THEME_OUT/highlight.svg" <<EOF
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <rect x="0" y="0" width="24" height="24" rx="6" ry="6" fill="$accent"/>
-</svg>
-EOF
-
-cat >"$THEME_OUT/prev.svg" <<EOF
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="20" viewBox="0 0 16 20" fill="none">
-  <path d="M10.5 5 L6 10 L10.5 15" stroke="$dim" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>
-EOF
-
-cat >"$THEME_OUT/next.svg" <<EOF
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="20" viewBox="0 0 16 20" fill="none">
-  <path d="M5.5 5 L10 10 L5.5 15" stroke="$dim" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>
-EOF
-
-cat >"$THEME_OUT/radio.svg" <<EOF
-<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">
-  <circle cx="6" cy="6" r="3" fill="$accent"/>
-</svg>
-EOF
-
-cat >"$THEME_OUT/arrow.svg" <<EOF
-<svg xmlns="http://www.w3.org/2000/svg" width="10" height="15" viewBox="0 0 10 15" fill="none">
-  <path d="M4 4.5 L7 7.5 L4 10.5" stroke="$dim" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>
-EOF
-
-cat >"$THEME_OUT/theme.conf" <<EOF
-[Metadata]
-Name=Omarchy
-Version=1
-Author=omarchy fcitx5-theme hook
-Description=Omarchy theme colours ($THEME_SLUG)
-ScaleWithDPI=True
-
-[InputPanel]
-NormalColor=$fg
-CandidateLabelColor=$dim
-CandidateCommentColor=$dim
-HighlightColor=$inline_fg
-HighlightBackgroundColor=$inline_bg
-HighlightCandidateColor=$accent_fg
-HighlightCandidateLabelColor=$accent_dim
-HighlightCandidateCommentColor=$accent_dim
-PageButtonAlignment=Last Candidate
-FullWidthHighlight=True
-
-[InputPanel/Background]
-Image=background.svg
-Color=$bg
-BorderColor=$border
-BorderWidth=1
-
-[InputPanel/Background/Margin]
-Left=12
-Right=12
-Top=12
-Bottom=12
-
-[InputPanel/ContentMargin]
-Left=6
-Right=6
-Top=6
-Bottom=6
-
-[InputPanel/TextMargin]
-Left=6
-Right=6
-Top=6
-Bottom=6
-
-[InputPanel/Highlight]
-Image=highlight.svg
-Color=$accent
-BorderColor=$accent
-BorderWidth=0
-
-[InputPanel/Highlight/Margin]
-Left=6
-Right=6
-Top=6
-Bottom=6
-
-[InputPanel/Highlight/HighlightClickMargin]
-Left=2
-Right=2
-Top=2
-Bottom=2
-
-[InputPanel/PrevPage]
-Image=prev.svg
-
-[InputPanel/PrevPage/ClickMargin]
-Left=4
-Right=4
-Top=4
-Bottom=4
-
-[InputPanel/NextPage]
-Image=next.svg
-
-[InputPanel/NextPage/ClickMargin]
-Left=4
-Right=4
-Top=4
-Bottom=4
-
-[Menu]
-NormalColor=$fg
-HighlightCandidateColor=$accent_fg
-Spacing=2
-
-[Menu/Background]
-Image=background.svg
-Color=$bg
-BorderColor=$border
-BorderWidth=1
-
-[Menu/Background/Margin]
-Left=12
-Right=12
-Top=12
-Bottom=12
-
-[Menu/ContentMargin]
-Left=6
-Right=6
-Top=6
-Bottom=6
-
-[Menu/TextMargin]
-Left=6
-Right=6
-Top=6
-Bottom=6
-
-[Menu/Highlight]
-Image=highlight.svg
-Color=$accent
-BorderColor=$accent
-BorderWidth=0
-
-[Menu/Highlight/Margin]
-Left=6
-Right=6
-Top=6
-Bottom=6
-
-[Menu/Separator]
-Color=$border
-
-[Menu/CheckBox]
-Image=radio.svg
-
-[Menu/SubMenu]
-Image=arrow.svg
-EOF
-
-# Hot-reload the classicui addon config over DBus. NOTE: 'fcitx5-remote -r'
-# only reloads the global config and would NOT re-read the theme (verified on
-# host); ReloadAddonConfig is what fcitx5-configtool uses.
-reload_fcitx5() {
-  command -v fcitx5-remote >/dev/null 2>&1 || return 1
-  fcitx5-remote >/dev/null 2>&1 || return 1 # fcitx5 not running: nothing to reload
-  if command -v gdbus >/dev/null 2>&1; then
-    gdbus call --session --dest org.fcitx.Fcitx5 --object-path /controller \
-      --method org.fcitx.Fcitx.Controller1.ReloadAddonConfig classicui \
-      >/dev/null 2>&1 && return 0
-  fi
-  if command -v busctl >/dev/null 2>&1; then
-    busctl --user call org.fcitx.Fcitx5 /controller \
-      org.fcitx.Fcitx.Controller1 ReloadAddonConfig s classicui \
-      >/dev/null 2>&1 && return 0
-  fi
-  if command -v dbus-send >/dev/null 2>&1; then
-    dbus-send --session --dest=org.fcitx.Fcitx5 --print-reply \
-      /controller org.fcitx.Fcitx.Controller1.ReloadAddonConfig \
-      string:classicui >/dev/null 2>&1 && return 0
-  fi
-  return 1
-}
-
-reload_fcitx5 || true
-exit 0
-`

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ProjectAILeap/ompinyin/internal/bar"
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/observe"
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
@@ -157,11 +158,25 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	p.NeedDeploy = len(c.BuildMissing) > 0 || p.NeedL3 || forceL2
 	// The group SHAPE (not just "is rime registered") is part of L4: fcitx5
 	// gates every IM hotkey on len(GroupIMs) > 1, so a stale second IM changes
-	// what Ctrl+Space and left Shift both do. AltTriggerOK is its partner: with
-	// >1 IM the shipped AltTriggerKeys=Shift_L turns left Shift into the same
-	// toggle as the trigger key, so convergence empties it.
+	// what the IM hotkeys do.
 	groupDrift := !catalog.SameIMs(c.GroupIMs, d.IMsOrDefault())
-	p.NeedHost = !c.ProfileHasRime || !c.HotkeyOK || !c.DropInOK || groupDrift || !c.AltTriggerOK
+	if c.OmarchyManagesIME {
+		// Omarchy 4.5+ owns the IM hotkeys (its config ships AltTriggerKeys=Shift_L,
+		// `configure.py` deletes any Control+space on every --defaults, `Super+I`
+		// cycles) and the tray indicator. Convergence keeps ONLY the group shape and
+		// removes the chord older ompinyin versions wrote — fighting upstream there
+		// is a permanent patch war (adapt 4.5 D1).
+		//
+		// DropInExists / StaleOverride are host work for a SECOND reason: deleting a
+		// drop-in (ours or v1.0's generic override.conf) only takes effect when the
+		// unit restarts, so it has to happen inside the stop window. Without these
+		// terms the upgrade run would delete the files after the restart and no
+		// later run would ever reopen the window — the duplicate SNI icon would
+		// survive until the next login.
+		p.NeedHost = !c.ProfileHasRime || groupDrift || c.ControlSpace || c.DropInExists || c.StaleOverride
+	} else {
+		p.NeedHost = !c.ProfileHasRime || !c.HotkeyOK || !c.DropInOK || groupDrift || !c.AltTriggerOK
+	}
 	// "fcitx5 is running" is part of the L4 terminal state (verify checks it,
 	// §6.4 needs the SNI item live). Without this predicate a host whose unit
 	// was stopped by hand could never be repaired: no other layer had work, so
@@ -170,7 +185,13 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	// the few hundred ms its doomed instance lives, so "active" alone would
 	// declare the service satisfied and never clear the stray that causes it.
 	p.NeedService = c.Unit != "" && (!c.ServiceActive || c.FcitxCount > 1)
-	p.NeedTray = !c.PinnedHasFc || !c.DropInOK
+	if c.OmarchyManagesIME {
+		// The indicator is Omarchy's own bar widget; the only tray work left is
+		// making sure it is on the bar and dropping the pre-4.5 drop-in/pin.
+		p.NeedTray = !c.BarIndicator || c.StaleTray
+	} else {
+		p.NeedTray = !c.PinnedHasFc || !c.DropInOK
+	}
 	// A zero desired DPI is the legacy/test snapshot meaning that X11 facts
 	// were not collected. Real observe.Collect always supplies at least 96.
 	// force_zero_scaling=false means Hyprland already scales X11 windows
@@ -185,7 +206,11 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	p.NeedHidpiUndo = !d.X11HiDPI && (c.X11ManagedPresent || c.X11UnitsPresent)
 	switch {
 	case p.NeedDeploy || p.NeedHost:
-		p.Add("L4", fmt.Sprintf("stop %s → rime_deployer --build → profile/hotkey/drop-in → start%s", unitName(c), hostDriftNote(d, c)), true)
+		inner := "profile/hotkey/drop-in"
+		if c.OmarchyManagesIME {
+			inner = "profile/清理旧触发键"
+		}
+		p.Add("L4", fmt.Sprintf("stop %s → rime_deployer --build → %s → start%s", unitName(c), inner, hostDriftNote(d, c)), true)
 	case p.NeedService:
 		state := "服务未运行"
 		if c.ServiceActive {
@@ -196,9 +221,15 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 		p.Add("L4", "部署产物与宿主注册均已达成", false)
 	}
 
-	// L4 tray (mandatory terminal state, ADR 12)
+	// L4 tray: 4.5+ = confirm Omarchy's bar indicator + drop the old artifacts
 	if p.NeedTray {
-		p.Add("L4", "顶栏图标：启用 notificationitem + pin Fcitx（读→合并→set）", true)
+		if c.OmarchyManagesIME {
+			p.Add("L4", "顶栏输入法指示器（omarchy.keyboard-layout）+ 清理旧 drop-in/pin", true)
+		} else {
+			p.Add("L4", "顶栏图标：启用 notificationitem + pin Fcitx（读→合并→set）", true)
+		}
+	} else if c.OmarchyManagesIME {
+		p.Add("L4", "顶栏输入法指示器已在 bar 上（"+bar.WidgetID+"）", false)
 	} else {
 		p.Add("L4", "顶栏图标已 pin", false)
 	}
@@ -218,10 +249,12 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 		p.Add("L4", fmt.Sprintf("X11 HiDPI 已发布 Xft.dpi=%d%s%s", c.X11DPIDesired, c.X11ForeignNote(), c.X11UnitExecNote()), false)
 	}
 
-	// L4 candidate-window theming (§6.6)
-	p.NeedTheme = !c.ThemeEqual || !c.ThemeDirOK
+	// L4 candidate-window theming (§6.6): classicui is ours, the colors and the
+	// theme dir belong to Omarchy's generator. A surviving theme hook is residue
+	// from <=1.3 and counts as work (it races omarchy-theme-set-fcitx5).
+	p.NeedTheme = !c.ThemeEqual || c.ThemeHookOK
 	if p.NeedTheme {
-		p.Add("L4", "候选框主题：classicui.conf→omarchy + theme-set 钩子 + 立即按当前 Omarchy 主题生成", true)
+		p.Add("L4", "候选框主题：classicui.conf→omarchy + 交给 omarchy-theme-set-fcitx5（并清理旧钩子）", true)
 	} else {
 		p.Add("L4", "候选框已跟随 Omarchy 主题", false)
 	}
@@ -236,14 +269,41 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 // none of them). Empty when profile/hotkey/drop-in are all on target.
 func hostDriftNote(d catalog.Desired, c *observe.Current) string {
 	var parts []string
-	if want := d.IMsOrDefault(); !catalog.SameIMs(c.GroupIMs, want) {
+	want := d.IMsOrDefault()
+	if !catalog.SameIMs(c.GroupIMs, want) {
 		have := "无"
 		if len(c.GroupIMs) > 0 {
 			have = strings.Join(c.GroupIMs, " ")
 		}
-		parts = append(parts, fmt.Sprintf("输入法组 [%s] → [%s]", have, strings.Join(want, " ")))
+		note := fmt.Sprintf("输入法组 [%s] → [%s]", have, strings.Join(want, " "))
+		// D2: the installer's own `pinyin` engine leaves the group; the engine and
+		// its package stay installed, so say how to put it back instead of letting
+		// the user discover the removal afterwards.
+		if removed := catalog.RemovedIMs(c.GroupIMs, want); len(removed) > 0 {
+			note += fmt.Sprintf("；将把 %s 移出组", strings.Join(removed, " "))
+			// D2: an engine's package and dictionary stay, so name the way back.
+			// A keyboard-* item is not an engine and `omarchy setup input` has no
+			// preset for it, so it gets no hint.
+			for _, im := range removed {
+				if !strings.HasPrefix(im, "keyboard-") {
+					note += fmt.Sprintf("（引擎与包保留，`omarchy setup input %s` 可加回）", im)
+					break
+				}
+			}
+		}
+		parts = append(parts, note)
 	}
-	if !c.AltTriggerOK {
+	if c.OmarchyManagesIME {
+		if c.DropInExists {
+			parts = append(parts, "移除旧 notificationitem drop-in（只在 stop 窗口内生效：重启后 fcitx5 不再发第二个托盘图标）")
+		}
+		if c.StaleOverride {
+			parts = append(parts, "移除 v1.0 的 override.conf（它覆盖了 Omarchy 的 ExecStart，同样只在 stop 窗口内生效）")
+		}
+		if c.ControlSpace {
+			parts = append(parts, "删除 [Hotkey/TriggerKeys] 中的 Control+space（触发键归 Omarchy：Super+I 循环、左 Shift 进出输入法；Ctrl+Space 留给终端）")
+		}
+	} else if !c.AltTriggerOK {
 		bound := "缺段（fcitx5 会回落 Shift_L）"
 		if len(c.AltTriggerKeys) > 0 {
 			bound = strings.Join(c.AltTriggerKeys, " ")

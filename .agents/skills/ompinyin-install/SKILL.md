@@ -2,11 +2,12 @@
 name: ompinyin-install
 description: >
   Install, repair, or diagnose the ompinyin Chinese input method stack on an
-  Omarchy machine, converging to "full pinyin + wanxiang LMDG model + top-bar
-  icon + candidate window following the Omarchy theme", idempotently and
-  reversibly. Use when asked to install the Chinese IME, fix an ompinyin
-  install, "can't type Chinese / no Chinese output", a missing top-bar IM
-  icon, or to diagnose input-method problems — a candidate window that is too
+  Omarchy machine, converging to "full pinyin + wanxiang LMDG model + Omarchy's
+  own top-bar IM indicator (on the bar) + candidate window following the
+  Omarchy theme", idempotently and reversibly. Use when asked to install the
+  Chinese IME, fix an ompinyin install, "can't type Chinese / no Chinese
+  output", a missing (or duplicated) top-bar IM icon, an IM group containing
+  the wrong engines, or to diagnose input-method problems — a candidate window that is too
   small in X11/XWayland apps (WeChat, Baidu Netdisk), WeChat / other
   non-Wayland apps whose UI and fonts are too large from HiDPI double-scaling,
   a lock screen that rejects the password after full-width (全角) input, or a
@@ -18,7 +19,9 @@ description: >
 # ompinyin 中文输入法助手（安装 / 排障）
 
 你是运维助手：在一台**已登录的 Omarchy 图形会话**上跑 `ompinyin`，把它收敛到
-「全拼 + 万象整句模型 + 顶栏输入法图标 + 候选框跟随 Omarchy 主题」，幂等、可回滚。
+「全拼 + 万象整句模型 + 顶栏输入法指示器在栏上 + 候选框跟随 Omarchy 主题」，幂等、可回滚。
+**Omarchy 4.5+**：热键、顶栏指示器、候选框配色都由 Omarchy 提供，ompinyin 只保证它们到位并清理老版本
+自己装过的产物（notificationitem drop-in / `Fcitx` SNI pin / theme-set 钩子）。
 只跑工具，**不改代码、不碰仓库**。诊断是只读的：`status` / `doctor` 永远安全，
 不会落盘或收敛。
 
@@ -40,13 +43,17 @@ description: >
 3) ompinyin install -y                 # 收敛：全拼 + 万象 + 顶栏图标 + 候选框跟随主题
 4) ompinyin status && ompinyin doctor  # 须无差异、全通过
 5) 人工核对：
-     · Ctrl+Space  在 IM 组内切到英文键盘（默认组 `[rime keyboard-us]` = 直接走键盘布局输英文）；
-     判据是按键前后 `fcitx5-remote` 的 IM 名是否 `rime` → `keyboard-us`。组内只有 rime 时它**不动作**
-     （fcitx5 的 `canTrigger()` 要求条目数 > 1）。
-                   它与 herdr 的 prefix 天然冲突，所以 herdr 前缀应为 `ctrl+b`（dotfiles 侧，本工具不管）
-     · 左右 Shift  在 rime 内切中英（受管手感项，`commit_code`；不依赖输入法开关）
+     · 左 Shift       Omarchy 4.5+ 的「开/关输入法」：左 Shift 是 fcitx5 的 AltTriggerKeys（上游默认），
+                   只翻 active（不改组内 IM）；rime 侧被我们显式写成 `Shift_L: noop`，不会与引擎内切换打架
+     · Super+I        Omarchy 4.5+ 的「换 IM」：rime ↔ keyboard-us 循环
+     Super+I 是 `omarchy-input-method cycle`。判据是按键前后 `fcitx5-remote` 的 IM 名是否
+     `rime` → `keyboard-us`；组内只有 rime 时**都不动作**（fcitx5 的 `canTrigger()` 要求条目数 > 1）。
+     4.0（4.5 之前）上对应的是 `Ctrl+Space`（那时热键由 ompinyin 写；herdr 前缀应为 `ctrl+b`，dotfiles 侧）
+     · 右 Shift    在 rime 内切中英（受管手感项 `commit_code`；不依赖输入法开关）。
+                   左 Shift 在 4.5+ 不再属于 rime——写 `Shift_L: commit_code` 也永不触发
      · F4          切 Rime 方案（全拼 ↔ 双拼；fcitx5 的输入法列表里只有一项 "Rime"）
-     · 顶栏能看到输入法图标；候选框是当前主题配色
+     · 顶栏有一个（且只有一个）输入法指示器：Omarchy 自绘的 `omarchy.keyboard-layout`；
+                   候选框是当前主题配色
 ```
 
 **完成信号**：`plan.needsApply:false`（或 `status` 无差异）= 没事可做，**停止，别再跑**。
@@ -59,12 +66,13 @@ description: >
 |---|---|---|
 | `menu/page_size` | 9 | 每页 9 个候选 |
 | `,` `.` | `Page_Up/Page_Down` | 翻页 |
-| `ascii_composer/switch_key/Shift_L`、`Shift_R` | `commit_code` | 左右 Shift 都能切中英（先上屏已打编码） |
+| `ascii_composer/switch_key/Shift_R` | `commit_code` | 右 Shift 在 rime 内切中英（先上屏已打编码） |
+| `ascii_composer/switch_key/Shift_L` | `noop` | 左 Shift 让给 fcitx5 的 AltTriggerKeys。不写会回落到 rime 出厂的 `commit_code`，两边抢同一个键 → 同一按键有时进 rime、有时进英文键盘 |
 | `Control_L/R` | `noop` | Ctrl 尾随不误切 |
 | `good_old_caps_lock` | `true` | CapsLock 只切大写 |
 | `switches/@4/reset` | `0` | **全半角永远从半角起步**（写进每个方案的 custom.yaml） |
 | `switcher/save_options` | 4 项（**不含** `full_shape`） | 全角不跨会话记忆；与上一条成对 |
-| `[Hotkey/TriggerKeys]` | 只有 `Control+space` | 中文输入法的传统键；旧版本写过的 `Alt+space`（窗口菜单键）被**移除** |
+| `[Hotkey/TriggerKeys]` | 4.0（4.5 之前）：只有 `Control+space`；4.5+：**不写** | 4.5 起热键归 Omarchy（`Super+I` / 左 Shift）；ompinyin 只删旧版残留的 `Control+space`/`Alt+space`，且绝不碰 `[Hotkey/AltTriggerKeys]` |
 | `switcher/hotkeys` | `[F4]` | 上游一次绑了 F4 + `Ctrl+\`` 家族；`Ctrl+\`` 与 VS Code 终端、JetBrains quick-switch 冲突，只留 F4 |
 
 仍归用户：`ascii_punct`（中英标点）/ 简繁 / emoji / 单字 的**默认值**，以及其它修饰键。
@@ -128,11 +136,15 @@ Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信、�
 
 - 只在 **Omarchy** 跑；普通用户、勿 root。
 - 勿设 `GTK_IM_MODULE` / `~/.xprofile` 等 IM 环境变量（Wayland 反模式）。
-- 勿手改 `~/.config/fcitx/rime` 与 `~/.config/omarchy/shell.json`——工具会读→并→写回（`tray.SetPinned`）。
+- 勿手改 `~/.config/fcitx/rime` 与 `~/.config/omarchy/shell.json`——4.0 上工具会读→并→写回（`tray.SetPinned`），
+  4.5+ 只做「去掉 `Fcitx`」（`tray.RemovePinned`）。
 - 勿跑 `pacman -Syu`（会漂移 Omarchy stable 锁版本；只用 `-Sy` / `-S --needed`）。
-- 顶栏图标是**必做终态**，无 `--tray-pin`/`--no-tray`；装上就有。
-- 候选框跟随 Omarchy 主题也是**默认终态**（无 flag）：`classicui.conf` + `theme-set.d/fcitx5-theme` 钩子入账、按所有权协议覆盖（`classicui.conf` 只受管 6 个键，其余键保留）；`~/.local/share/fcitx5/themes/omarchy/` 为钩子生成目录（不入账，但卸载会删）。换主题由钩子自动刷新，勿手改这三个文件。
-- **勿手改受管文件**：`rime/*.custom.yaml`、`classicui.conf`、`~/.config/fcitx5/config` 的 `[Hotkey/TriggerKeys]`、`~/.config/fcitx5/profile`（只保证 rime 注册）、两个 `ompinyin-x11-hidpi.*` unit、`~/.Xresources` 的 marker 块。要改行为就改 `ompinyin install` 的参数。
+- 顶栏输入法指示器是**必做终态**，无 `--tray-pin`/`--no-tray`。4.5+ 上由 Omarchy 自绘：工具跑
+  `omarchy bar put omarchy.keyboard-layout`（需外壳在跑）并**删掉**老版本的 drop-in/pin；**别为了让它变绿去手改 `shell.json`**。
+- 候选框跟随 Omarchy 主题也是**默认终态**（无 flag）：ompinyin 只拥有 `classicui.conf` 的 6 个键（其余键保留）；
+  配色由 Omarchy 的 `omarchy-theme-set-fcitx5` 生成 `~/.local/share/fcitx5/themes/omarchy/`（**不入账、卸载不删**）。
+  旧版 ompinyin 装的 `theme-set.d/fcitx5-theme` 钩子与它并发写同一目录，收敛会删掉——**别把它装回去**。
+- **勿手改受管文件**：`rime/*.custom.yaml`、`classicui.conf`、`~/.config/fcitx5/profile`（组形状由 `desired.ims` 声明）、两个 `ompinyin-x11-hidpi.*` unit、`~/.Xresources` 的 marker 块。要改行为就改 `ompinyin install` 的参数。4.5+ 上 `~/.config/fcitx5/config` 归 Omarchy，ompinyin 只删自己写过的触发键。
 - `--x11-hidpi` 是**显式 opt-in**：未显式给出时绝不写 `~/.Xresources`、不装 `xorg-xrdb`、不装单元；启用后**勿再给应用叠加显式缩放因子**（见上）。
 - 勿手改 `~/.Xresources` 里 marker 块之外的内容，勿删别人的 `Xft.dpi`（行级拥有）。
 - **勿在 fcitx5 服务停止时用 `fcitx5-remote`/总线命令探测存活**（`fcitx5-remote -n`/`-q` 也算）：`org.fcitx.Fcitx5` 是唯一总线名，这一步会 D-Bus 激活一个游离 fcitx5 占住它，单元的实例从此启动即退出。存活只用 `pgrep -x fcitx5`；`ompinyin` 的 `status`/`doctor`/`install` 都是安全的（内部只用进程探针）。
@@ -157,20 +169,26 @@ Wayland 原生应用的候选框正常，但 **X11/XWayland 应用（微信、�
   `catalog.FullShapeSwitchIndex`）。
 - **`doctor` 报 X11 HiDPI 未达标**：`Xft.dpi 实际≠期望`（可能第三方改了根属性，或块外
   `Xft.dpi` 获胜）——重跑 `install`；若提示 `force_zero_scaling=false`，则本模式不适用。
-- **`Ctrl+Space` 和 herdr 抢键**：输入法用 `Ctrl+Space`（传统键），herdr 的 prefix 应为 `ctrl+b`
+- **`Ctrl+Space` 和 herdr 抢键（4.0）**：那里输入法用 `Ctrl+Space`（传统键），herdr 的 prefix 应为 `ctrl+b`
   （`~/.config/herdr/config.toml` 的 `[keys] prefix`，改完 `herdr server reload-config`）。
   **新装 Omarchy 出厂就是 `ctrl+space`** ⇒ 一定会撞；`ompinyin doctor` 会告警（判据：
   `observe.HerdrPrefix` 读 `$HERDR_CONFIG_PATH` → `~/.config/herdr/config.toml` → 内置 `ctrl+b`）。
   ompinyin **只告警**，不改她的配置、也不偷偷换触发键。方案切换是 `F4`（`Ctrl+\`` 家族被移除，会与编辑器冲突）。
-- **键按了没反应**：判据是按键前后 `fcitx5-remote` 是否 `2 → 1`。不影响打字（Shift 在 rime 内切中英），
-  需要关输入法时可用顶栏图标菜单或 `fcitx5-remote -t`。
+- **键按了没反应**：判据是按键前后 `fcitx5-remote` 是否 `2 → 1`。不影响打字（右 Shift 在 rime 内切中英），
+  需要关输入法时可用顶栏指示器菜单或 `fcitx5-remote -t`。
 - **切不到「纯英文键盘」IM**：profile 里只有 `rime`（v1.3 起不再注册 `keyboard-us`）。
   `Ctrl+Space` 停用 fcitx5 即等于用键盘布局直接输英文；要独立英文 IM 得自己加。
 - **L1 装包失败 / 镜像慢**：`ompinyin source`（默认 `--preset cn`，内部 `sudo` 写 `/etc/pacman.d/mirrorlist`，勿 `sudo ompinyin source`）后重跑 `install`。
 - **打不出中文**：多为 `default.custom.yaml` 的 `schema_list` 被改成裸 `- <id>` 短格式（`rime_deployer --build` 会忽略，只出 `build/default.yaml` 骨架）。重跑一次 `ompinyin install` 会重写为 `- schema: <id>` map 格式。
-- **顶栏图标在 ◀ 抽屉里**：说明只启用了 notificationitem 没 pin `Fcitx`——重跑 `install` 补 pin。
+- **顶栏没有输入法指示器**：4.5+ 上跑 `omarchy bar put omarchy.keyboard-layout`（或 `ompinyin install`）；
+  `ompinyin doctor` 的「顶栏输入法指示器」行给出精确修复。外壳没在跑时只能靠 Omarchy 默认配置。
+- **顶栏有两个输入法图标**：老版本 ompinyin 的 notificationitem drop-in / `Fcitx` pin 还在（`doctor` 的
+  `staleTrayArtifacts` / 「检测到旧产物」）——跑一次 `ompinyin install` 就会清掉。
+- **顶栏图标在 ◀ 抽屉里（4.0）**：只启用了 notificationitem 没 pin `Fcitx`——重跑 `install` 补 pin。
 - **`doctor`/`status` 报「IM 三态：fcitx5 服务未运行 + 非单元 fcitx5 占着 org.fcitx.Fcitx5」**（常伴顶栏图标消失、打不出中文）：服务停止时被 D-Bus 激活的游离实例占住了总线名，单元自己 spawn 的实例启动即退出 0，`Restart=always` 把它拖成死循环。重跑 `ompinyin install` 会自动清理再启动（v1.2.2 起；旧版只提示你手跑 `pkill -x fcitx5` 再 `systemctl --user reset-failed … && start …`）。见「红线」——以后别在服务停止时手跑 `fcitx5-remote`。
-- **doctor 报「候选框主题」未达标**：`classicui.conf` 被手改/缺失、钩子缺失，或当前 Omarchy 主题颜色（`~/.local/state/omarchy/current/theme/colors.toml`）不可用（极少见）——重跑 `ompinyin install` 会按所有权协议修复；主题颜色缺失时候选框保持 fcitx5 默认外观，属预期。
+- **doctor 报「候选框主题」未达标**：`classicui.conf` 被手改/缺失，或**旧 theme-set 钩子还在**（与 Omarchy 的生成器并发写）——重跑 `ompinyin install` 会按所有权协议修复并删掉钩子；4.5 之前的 Omarchy 没有 `omarchy-theme-set-fcitx5`，此时候选框保持 fcitx5 默认外观，属预期。
+- **升级到 Omarchy 4.5 后行为变化**：左 Shift 从「rime 内切中英」变成「开/关输入法」（上游 `AltTriggerKeys=Shift_L`），rime 内中英改右 Shift，换 IM 用 `Super+I`；`Ctrl+Space` 不再切输入法（留给终端）。这是 4.5 的既定键位，不要试图改回。
+- **左 Shift 「时灵时不灵」**：那是 `Shift_L: noop` 缺失的老状态（rime 出厂 `commit_code` 与 fcitx 的 AltTrigger 抢同一个键）。跑一次 `ompinyin install -y`，然后确认 `default.custom.yaml` 里有 `Shift_L: noop`。
 - **首次安装**会接管 `default.custom.yaml`（候选数 9、`,` `.` 翻页、手感项），改动前已备份到 `backup-<ts>/`。
 - **headless**：`-y` + 给 pacman 配 NOPASSWD sudoers（工具用 `sudo -n`）。
 

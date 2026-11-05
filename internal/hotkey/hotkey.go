@@ -1,8 +1,11 @@
-// Package hotkey writes the fcitx5 trigger keys with INI merge semantics and
-// keysym whitelist validation (§6.2).
+// Package hotkey reads the fcitx5 trigger keys, and (pre-4.5 hosts only)
+// writes them with INI merge semantics and keysym whitelist validation (§6.2).
 //
-// Omarchy's herdr prefix is Ctrl+Space, so the trigger keys are written
-// unconditionally — the merge never overwrites unrelated user hotkey sections.
+// Omarchy 4.5+ takes the IM hotkeys back (its config ships
+// `TriggerKeys=Zenkaku_Hankaku/Hangul`, `AltTriggerKeys=0=Shift_L`,
+// `Super+I` cycles, and `configure.py` deletes anything else on every
+// `--defaults`), so 4.5 convergence only REMOVES the chords older ompinyin
+// versions wrote: fighting upstream there is a permanent patch war (adapt 4.5 D1).
 package hotkey
 
 import (
@@ -34,6 +37,12 @@ var DefaultKeys = []string{"Control+space"}
 // never remove") would leave both bound on an existing host, so the managed
 // terminal state drops it.
 var PruneKeys = []string{"Alt+space"}
+
+// LegacyTriggerKeys are the chords older ompinyin versions wrote into
+// [Hotkey/TriggerKeys]. Omarchy 4.5+ owns the IM hotkeys (`Super+I` cycles,
+// left Shift enters/leaves the IME) and its own config/migration keeps
+// rewriting them, so 4.5 convergence only REMOVES these (adapt 4.5 D1).
+var LegacyTriggerKeys = []string{"Control+space", "Alt+space"}
 
 // SameKey compares two chords across the two spellings in play (fcitx5's
 // "Control+space" vs herdr's "ctrl+space"), ignoring case and spaces. Exported
@@ -186,6 +195,47 @@ func EnsureTrigger(content string, keys []string) (string, bool, error) {
 	}
 	secs = append(secs, section{Name: TriggerSection, Lines: targetLines(keys)})
 	return renderINI(secs), true, nil
+}
+
+// TriggerKeys returns the keys bound in [Hotkey/TriggerKeys] (nil when the
+// section is absent).
+func TriggerKeys(content string) []string {
+	for _, s := range parseINI(content) {
+		if s.Name == TriggerSection {
+			return sectionKeyValues(s.Lines)
+		}
+	}
+	return nil
+}
+
+// RemoveTriggerKey deletes one chord from [Hotkey/TriggerKeys]; the survivors
+// keep their order and are renumbered contiguously. The section is KEPT even
+// when it ends up childless: for fcitx5 "section exists but binds nothing" is
+// the only encoding of "no trigger key", while an absent section means "use
+// the shipped default". changed=false when the chord was not bound.
+func RemoveTriggerKey(content, key string) (string, bool, error) {
+	if err := ValidateKey(key); err != nil {
+		return "", false, err
+	}
+	secs := parseINI(content)
+	for i := range secs {
+		if secs[i].Name != TriggerSection {
+			continue
+		}
+		keys := sectionKeyValues(secs[i].Lines)
+		var kept []string
+		for _, k := range keys {
+			if !sameKey(k, key) {
+				kept = append(kept, k)
+			}
+		}
+		if len(kept) == len(keys) {
+			return content, false, nil
+		}
+		secs[i].Lines = targetLines(kept)
+		return renderINI(secs), true, nil
+	}
+	return content, false, nil
 }
 
 // sectionKeyValues extracts the values of `N=value` lines (order preserved).

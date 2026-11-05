@@ -14,6 +14,7 @@ import (
 
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
+	"github.com/ProjectAILeap/ompinyin/internal/service"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
 )
 
@@ -44,6 +45,79 @@ func DropInRelPath(unit string) string {
 // DropInRelPathLegacy is the historical hardcoded path, kept so uninstall can
 // clean up after a run that wrote it before the path was unit-aware.
 const DropInRelPathLegacy = ".config/systemd/user/omarchy-fcitx5.service.d/ompinyin-notificationitem.conf"
+
+// OverrideFileName is generic by nature: any tool (or the user) may own it.
+// That is exactly why ompinyin may only delete it when its CONTENT is one of the
+// bodies ompinyin itself ever wrote (see LegacyOverrideMatches).
+const OverrideFileName = "override.conf"
+
+// LegacyOverrideBody is the literal body ompinyin v1.0 wrote to override.conf
+// (commit 7c289dc): no managed header, so it cannot be recognised by name or by
+// header — only by these exact bytes. On Omarchy 4.5+ it is harmful: it replaces
+// the unit's `--replace --disable notificationitem` and fcitx5 publishes its own
+// SNI item again, so the bar shows two input-method icons.
+const LegacyOverrideBody = "[Service]\nExecStart=\nExecStart=/usr/bin/fcitx5\n"
+
+// LegacyOverrideRelPath returns the generic override.conf path for the unit.
+func LegacyOverrideRelPath(unit string) string {
+	if unit == "" {
+		unit = DefaultUnit
+	}
+	return ".config/systemd/user/" + unit + ".d/" + OverrideFileName
+}
+
+// LegacyOverridePath returns the absolute override.conf path for a home + unit.
+func LegacyOverridePath(home, unit string) string {
+	return filepath.Join(home, filepath.FromSlash(LegacyOverrideRelPath(unit)))
+}
+
+// LegacyOverrideMatches reports whether override.conf content is one ompinyin
+// itself wrote: the v1.0 literal body, or the derived drop-in body an older run
+// may have written under this generic name. Anything else belongs to someone
+// else and must never be deleted (pure).
+func LegacyOverrideMatches(content, derivedBody string) bool {
+	c := strings.TrimRight(content, "\n")
+	if c == strings.TrimRight(LegacyOverrideBody, "\n") {
+		return true
+	}
+	return derivedBody != "" && c == strings.TrimRight(derivedBody, "\n")
+}
+
+// DerivedDropInBody derives the notificationitem drop-in body from the unit file
+// that actually runs (the unit's own ExecStart, with only
+// `--disable notificationitem` stripped), falling back to the static body when
+// the unit is unreadable.
+func DerivedDropInBody(home, unit string) string {
+	if line := service.ExecStartLine(service.UnitFilePath(home, unit)); line != "" {
+		return DeriveDropInContent(line)
+	}
+	return DropInContent
+}
+
+// RemoveLegacyOverride deletes override.conf ONLY when its content is one
+// ompinyin wrote (LegacyOverrideMatches). Returns removed=false — and touches
+// nothing — for a user-authored override, even though that file may well be
+// breaking the host: saying so is verify's job, deleting it is not ours.
+func RemoveLegacyOverride(home, unit, derivedBody string) (removed bool, err error) {
+	p := LegacyOverridePath(home, unit)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !LegacyOverrideMatches(string(b), derivedBody) {
+		return false, nil
+	}
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if dir := filepath.Dir(p); isEmptyDir(dir) {
+		os.Remove(dir)
+	}
+	return true, nil
+}
 
 // DropInContent is the fallback drop-in body when the original unit file
 // cannot be read. Prefer DeriveDropInContent: it preserves whatever other
@@ -126,7 +200,8 @@ func WriteDropIn(home, unit, content string) (created bool, err error) {
 
 // RemoveDropIn deletes the dedicated drop-in for the unit (uninstall only),
 // plus the legacy hardcoded path and the empty .d directory it leaves behind.
-// It never touches other drop-in files (ADR 13).
+// It never touches other drop-in files (ADR 13) — the generic override.conf is
+// handled separately (RemoveLegacyOverride), because its name is not ours.
 func RemoveDropIn(home, unit string) error {
 	for _, rel := range []string{DropInRelPath(unit), DropInRelPathLegacy} {
 		p := filepath.Join(home, filepath.FromSlash(rel))
@@ -296,6 +371,65 @@ func SetPinned(shellJSONPath string, pinned []string) error {
 		lastErr = fmt.Errorf("cannot converge shell.json")
 	}
 	return lastErr
+}
+
+// RemovePinned drops the Fcitx entry from omarchy.tray.pinned in shell.json
+// (atomic write). It is the CLEANUP half of the 4.5 hand-over: Omarchy renders
+// the IM indicator itself, so a left-over SNI pin would show the same idea
+// twice. changed=false when there was no pin. Same race protection as
+// SetPinned: another writer (the shell, `omarchy bar set`) may land between our
+// read and our rename, so the write is retried against what is on disk now.
+func RemovePinned(shellJSONPath string) (changed bool, err error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		before, rerr := readOrNil(shellJSONPath)
+		if rerr != nil {
+			return false, rerr
+		}
+		want, dirty, merr := removePinnedFrom(before)
+		if merr != nil {
+			return false, merr
+		}
+		if !dirty {
+			return false, nil
+		}
+		if werr := state.WriteAtomic(shellJSONPath, want); werr != nil {
+			return false, werr
+		}
+		after, aerr := os.ReadFile(shellJSONPath)
+		if aerr != nil {
+			return false, aerr
+		}
+		if bytes.Equal(after, want) {
+			return true, nil
+		}
+		lastErr = fmt.Errorf("shell.json changed while ompinyin was writing it (another bar edit?)")
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("cannot converge shell.json")
+	}
+	return false, lastErr
+}
+
+// removePinnedFrom drops Fcitx from the pinned array of shell.json content,
+// leaving every other field (and pin) untouched. dirty=false when there was
+// nothing to remove.
+func removePinnedFrom(shellJSON []byte) (out []byte, dirty bool, err error) {
+	if len(shellJSON) == 0 {
+		return shellJSON, false, nil
+	}
+	pinned, err := ReadPinned(shellJSON)
+	if err != nil {
+		return nil, false, err
+	}
+	if !HasPin(pinned) {
+		return shellJSON, false, nil
+	}
+	merged, err := mergePinnedInto(shellJSON, RemovePin(pinned))
+	if err != nil {
+		return nil, false, err
+	}
+	return merged, true, nil
 }
 
 func readOrNil(path string) ([]byte, error) {

@@ -11,6 +11,8 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/service"
 )
 
+// convergedHost is a converged pre-4.5 Omarchy: there the tray drop-in + pin and
+// the trigger keys are still ompinyin's. managesHost() is the 4.5 counterpart.
 func convergedHost() *observe.Current {
 	return &observe.Current{
 		RimeDir:        "/tmp/rime",
@@ -23,7 +25,20 @@ func convergedHost() *observe.Current {
 		ProfileHasRime: true,
 		GroupIMs:       catalog.DefaultIMs(),
 		AltTriggerOK:   true,
+		ThemeConfOK:    true,
 	}
+}
+
+// managesHost is a converged Omarchy 4.5+ host: Omarchy owns the indicator and
+// the hotkeys, ompinyin only owns classicui.conf and the group shape.
+func managesHost() *observe.Current {
+	c := convergedHost()
+	c.OmarchyManagesIME = true
+	c.BarIndicator = true
+	c.ShellRunning = true
+	c.DropInExists, c.DropInOK = false, false
+	c.PinnedHasFc = false
+	return c
 }
 
 func find(t *testing.T, checks []Check, name string) Check {
@@ -450,7 +465,7 @@ func TestGroupShapeIsTerminalState(t *testing.T) {
 	if got.OK {
 		t.Fatalf("extra IM must fail L5: %+v", got)
 	}
-	for _, want := range []string{"pinyin-custom", "AltTrigger"} {
+	for _, want := range []string{"pinyin-custom", "移出组", "omarchy setup input pinyin-custom"} {
 		if !strings.Contains(got.Detail, want) {
 			t.Errorf("detail must explain %q: %s", want, got.Detail)
 		}
@@ -517,4 +532,147 @@ func d2WithTwoIMs() catalog.Desired {
 	d := catalog.DefaultDesired()
 	d.IMs = catalog.DefaultIMs()
 	return d
+}
+
+// TestBarIndicatorCheck: 4.5+ the terminal state is Omarchy's own widget on the
+// bar — the check must pass on the widget and name the exact fix when it is
+// missing, plus flag leftovers from the pre-4.5 tray.
+func TestBarIndicatorCheck(t *testing.T) {
+	d := catalog.DefaultDesired()
+	got := find(t, TerminalState(d, managesHost()), "顶栏输入法指示器")
+	if !got.OK {
+		t.Fatalf("widget on the bar must pass: %s", got.Detail)
+	}
+	// the 4.5 audit has no drop-in/pin rows any more (they are residue, not state)
+	for _, name := range []string{"托盘 drop-in", "托盘 pin"} {
+		for _, chk := range TerminalState(d, managesHost()) {
+			if chk.Name == name {
+				t.Errorf("4.5+ must not report %q as terminal state", name)
+			}
+		}
+	}
+
+	// present + shell running = green; absent + shell running = real drift
+	missing := managesHost()
+	missing.BarIndicator = false
+	got = find(t, TerminalState(d, missing), "顶栏输入法指示器")
+	if got.OK {
+		t.Fatal("a missing widget on a running shell must fail")
+	}
+	if !strings.Contains(got.Detail, "omarchy bar put omarchy.keyboard-layout") {
+		t.Errorf("detail must give the exact fix: %s", got.Detail)
+	}
+
+	// absent + shell NOT running: nothing can put the widget there, and Omarchy's
+	// default config already carries it — a red here is a false alarm that no run
+	// could clear before login.
+	noShell := managesHost()
+	noShell.BarIndicator = false
+	noShell.ShellRunning = false
+	got = find(t, TerminalState(d, noShell), "顶栏输入法指示器")
+	if !got.OK {
+		t.Fatalf("absent widget without a running shell must not fail: %s", got.Detail)
+	}
+	for _, want := range []string{"外壳未运行", "无法确认", "omarchy bar put"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail must explain %q: %s", want, got.Detail)
+		}
+	}
+
+	stale := managesHost()
+	stale.StaleTray = true
+	if got := find(t, TerminalState(d, stale), "顶栏输入法指示器"); !strings.Contains(got.Detail, "旧产物") {
+		t.Errorf("leftovers must be named: %s", got.Detail)
+	}
+}
+
+// TestThemeCheckAfterHandover: classicui is ours, the hook is residue — a host
+// that still carries the retired hook is NOT converged even though the file it
+// used to generate is fine.
+func TestThemeCheckAfterHandover(t *testing.T) {
+	d := catalog.DefaultDesired()
+	if got := find(t, TerminalState(d, managesHost()), "候选框主题"); !got.OK {
+		t.Errorf("converged theming must pass: %s", got.Detail)
+	}
+	hook := managesHost()
+	hook.ThemeHookOK = true
+	got := find(t, TerminalState(d, hook), "候选框主题")
+	if got.OK {
+		t.Fatal("the retired hook must read as residual work")
+	}
+	if !strings.Contains(got.Detail, "omarchy-theme-set-fcitx5") {
+		t.Errorf("detail must name the single source of colors: %s", got.Detail)
+	}
+	conf := managesHost()
+	conf.ThemeConfOK = false
+	if got := find(t, TerminalState(d, conf), "候选框主题"); got.OK {
+		t.Error("classicui.conf not pointing at the theme must fail")
+	}
+}
+
+// TestDoctorHotkeysAfterHandover: 4.5+ doctor reports the Omarchy hotkeys and
+// must NOT print an AltTriggerKeys row (Omarchy writes that section itself, so
+// the row could only ever pass by accident).
+func TestDoctorHotkeysAfterHandover(t *testing.T) {
+	d := catalog.DefaultDesired()
+	checks := Doctor(d, managesHost())
+	got := find(t, checks, "触发键")
+	if !got.OK {
+		t.Fatalf("Omarchy's hotkeys are the terminal state: %s", got.Detail)
+	}
+	for _, want := range []string{"Super+I", "左 Shift", "Ctrl+Space"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail must state the hand-over (%q): %s", want, got.Detail)
+		}
+	}
+	for _, chk := range checks {
+		if chk.Name == "AltTriggerKeys" {
+			t.Error("4.5+ doctor must not assert AltTriggerKeys (Omarchy's migration owns it)")
+		}
+	}
+
+	// a leftover Control+space is the one hotkey drift we still own
+	residue := managesHost()
+	residue.ControlSpace = true
+	if got := find(t, Doctor(d, residue), "触发键"); got.OK {
+		t.Error("a leftover Control+space must fail doctor")
+	}
+}
+
+// TestExecStartCheck: the duplicate-icon root cause can come from ANY drop-in, so
+// the check reads the EFFECTIVE ExecStart instead of trusting our own file names.
+// It only runs on 4.5+ — the pre-4.5 path removes that flag on purpose.
+func TestExecStartCheck(t *testing.T) {
+	d := catalog.DefaultDesired()
+	c := managesHost()
+	c.ExecStartOK = true
+	if got := find(t, TerminalState(d, c), "fcitx5 启动参数"); !got.OK {
+		t.Errorf("Omarchy's own ExecStart must pass: %s", got.Detail)
+	}
+	if !strings.Contains(find(t, TerminalState(d, c), "fcitx5 启动参数").Detail, "--disable notificationitem") {
+		t.Error("detail must name the flag that keeps the duplicate tray item away")
+	}
+
+	bad := managesHost()
+	bad.ExecStartOK = false
+	bad.EffectiveExecStart = "{ argv[]=/usr/bin/fcitx5 --replace }"
+	got := find(t, TerminalState(d, bad), "fcitx5 启动参数")
+	if got.OK {
+		t.Fatal("an overridden ExecStart must fail L5")
+	}
+	for _, want := range []string{"drop-in", "--disable notificationitem", "两个图标", ".config/systemd/user/", "override.conf"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail must explain %q: %s", want, got.Detail)
+		}
+	}
+	if !strings.Contains(got.Detail, bad.Unit) {
+		t.Errorf("detail must name the unit's drop-in dir: %s", got.Detail)
+	}
+
+	// pre-4.5 hosts deliberately strip the flag: this row must not exist there
+	for _, chk := range TerminalState(d, convergedHost()) {
+		if chk.Name == "fcitx5 启动参数" {
+			t.Error("the ExecStart check is 4.5+ only (the old path removes the flag on purpose)")
+		}
+	}
 }

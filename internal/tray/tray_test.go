@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ProjectAILeap/ompinyin/internal/service"
 )
 
 func TestDropInContent(t *testing.T) {
@@ -270,5 +272,146 @@ func TestDropInPathFollowsUnit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(omarchy), "user.conf")); err != nil {
 		t.Error("user drop-in deleted (ADR 13 violation)")
+	}
+}
+
+// RemovePinned is the 4.5+ cleanup half: the SNI pin must go while every other
+// pin the user made survives.
+func TestRemovePinned(t *testing.T) {
+	home := t.TempDir()
+	p := ShellJSONPath(home)
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	os.WriteFile(p, []byte(shellJSON), 0o644)
+
+	if err := SetPinned(p, []string{"Foo", "Bar", FcitxId}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := RemovePinned(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("removing an existing pin must report changed")
+	}
+	b, _ := os.ReadFile(p)
+	pinned, err := ReadPinned(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if HasPin(pinned) {
+		t.Errorf("Fcitx pin survived: %v", pinned)
+	}
+	if len(pinned) != 2 || pinned[0] != "Foo" || pinned[1] != "Bar" {
+		t.Errorf("user pins damaged: %v", pinned)
+	}
+	// idempotent: nothing left to remove, and the bytes stay put
+	before := string(b)
+	changed, err = RemovePinned(p)
+	if err != nil || changed {
+		t.Errorf("second call changed=%v err=%v", changed, err)
+	}
+	if b2, _ := os.ReadFile(p); string(b2) != before {
+		t.Error("an idempotent call must not rewrite the file")
+	}
+	// no shell.json at all: not an error, nothing to do
+	if changed, err := RemovePinned(filepath.Join(home, "nope.json")); err != nil || changed {
+		t.Errorf("missing file: changed=%v err=%v", changed, err)
+	}
+	// invalid JSON is a real error (never silently dropped)
+	os.WriteFile(p, []byte("not json"), 0o644)
+	if _, err := RemovePinned(p); err == nil {
+		t.Error("invalid shell.json must error")
+	}
+}
+
+// The v1.0 override.conf is name-agnostic: only its CONTENT says it is ours.
+// Legacy body → delete; derived body (written by an early v1.3 under the generic
+// name) → delete; anything else → HAND OFF (it is someone else's file).
+func TestRemoveLegacyOverride(t *testing.T) {
+	const unit = "omarchy-fcitx5.service"
+	derived := DeriveDropInContent("/usr/bin/fcitx5 --replace --disable notificationitem")
+
+	cases := []struct {
+		name    string
+		content string
+		remove  bool
+	}{
+		{"v1.0 literal body", LegacyOverrideBody, true},
+		{"derived drop-in body", derived, true},
+		{"trailing newline noise", LegacyOverrideBody + "\n", true},
+		{"user-authored override", "[Service]\nEnvironment=FOO=1\n", false},
+		{"user-authored ExecStart", "[Service]\nExecStart=\nExecStart=/usr/local/bin/fcitx5 --replace\n", false},
+		{"empty file", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := LegacyOverridePath(dir, unit)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// an unrelated drop-in in the same dir must always survive
+			other := filepath.Join(filepath.Dir(p), "user.conf")
+			os.WriteFile(other, []byte("[Service]\n"), 0o644)
+
+			removed, err := RemoveLegacyOverride(dir, unit, derived)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if removed != tc.remove {
+				t.Fatalf("removed=%v, want %v", removed, tc.remove)
+			}
+			if _, err := os.Stat(p); (err != nil) != tc.remove {
+				t.Errorf("file state wrong after remove (err=%v, want removed=%v)", err, tc.remove)
+			}
+			if _, err := os.Stat(other); err != nil {
+				t.Error("unrelated drop-in was deleted")
+			}
+			// the .d dir stays when the user still has a drop-in in it
+			if _, err := os.Stat(filepath.Dir(p)); err != nil {
+				t.Errorf(".d directory holding a user drop-in was removed: %v", err)
+			}
+		})
+	}
+
+	// idempotent / absent
+	if removed, err := RemoveLegacyOverride(t.TempDir(), unit, derived); err != nil || removed {
+		t.Errorf("missing file: removed=%v err=%v", removed, err)
+	}
+}
+
+// TestLegacyOverridePathFollowsUnit: like the drop-in, the override path must
+// follow the unit that actually runs.
+func TestLegacyOverridePathFollowsUnit(t *testing.T) {
+	home := t.TempDir()
+	if got, want := LegacyOverrideRelPath("fcitx5.service"), ".config/systemd/user/fcitx5.service.d/override.conf"; got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+	if LegacyOverridePath(home, "") != LegacyOverridePath(home, DefaultUnit) {
+		t.Error("empty unit must fall back to the Omarchy default unit")
+	}
+}
+
+// TestDerivedDropInBody: the derived body follows the unit that RUNS (generic
+// fcitx5.service included) and falls back to the static body when unreadable.
+func TestDerivedDropInBody(t *testing.T) {
+	// hermetic: a dev machine really has /usr/lib/systemd/user/omarchy-fcitx5.service
+	dirs := service.SystemUnitDirs
+	service.SystemUnitDirs = nil
+	t.Cleanup(func() { service.SystemUnitDirs = dirs })
+
+	home := t.TempDir()
+	if got := DerivedDropInBody(home, "omarchy-fcitx5.service"); got != DropInContent {
+		t.Errorf("no unit file must fall back to the static body:\n%s", got)
+	}
+	unitFile := filepath.Join(home, ".config", "systemd", "user", "fcitx5.service")
+	os.MkdirAll(filepath.Dir(unitFile), 0o755)
+	os.WriteFile(unitFile, []byte("[Service]\nExecStart=/usr/local/bin/fcitx5 --disable notificationitem --replace\n"), 0o644)
+	got := DerivedDropInBody(home, "fcitx5.service")
+	if !strings.Contains(got, "ExecStart=/usr/local/bin/fcitx5 --replace") {
+		t.Errorf("derived body must keep the unit's other flags:\n%s", got)
 	}
 }

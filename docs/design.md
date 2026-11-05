@@ -21,8 +21,9 @@
 | 词库 | **雾凇 `rime_ice`** | v1 唯一方案包 |
 | 输入布局 | **全拼** | `schema_list` 只含 `rime_ice`，F4 菜单干净 |
 | 整句模型 | **万象 LMDG** `wanxiang-lts-zh-hans.gram` | 挂到启用方案上，不是万象拼音方案 |
-| 顶栏图标 | **显示且固定** | 去掉 `--disable notificationitem` + pin `Fcitx`。无 `--no-tray` |
-| 候选框 | **跟随当前 Omarchy 主题（默认）** | classicui.conf→omarchy 主题 + theme-set 钩子，换主题自动刷新 |
+| 顶栏输入法指示器 | **在 bar 上** | Omarchy 4.5+ 自己渲染（`omarchy.keyboard-layout`）；本工具只 `omarchy bar put` 确认 + 清掉旧版 drop-in/pin。无 `--no-tray` |
+| 热键 | **归 Omarchy** | `Super+I` 循环输入法、左 Shift 开/关输入法、`F4` 选方案；本工具不写 `[Hotkey/*]`，只删旧版写过的 `Control+space` |
+| 候选框 | **跟随当前 Omarchy 主题（默认）** | classicui.conf 的键归我们，配色由 Omarchy 的 `omarchy-theme-set-fcitx5` 生成 |
 | 宿主 | fcitx5-rime + Omarchy 用户服务 | 一行环境变量都不写 |
 
 ### 1.3 非目标
@@ -49,7 +50,7 @@ Desired
 └── IMs        []IM ID              默认 [rime keyboard-us]（--single-im / --english-im，见 §6.1）
 ```
 
-顶栏图标不是 Desired 的可选项，是 L4 不变量：每次收敛都必须达到 §6.4。
+顶栏输入法指示器不是 Desired 的可选项，是 L4 不变量：每次收敛都必须达到 §6.4（Omarchy 4.5+ 由 Omarchy 自己渲染，本工具只保证它在栏上并清理旧产物）。
 
 ### 2.1 布局目录
 
@@ -86,9 +87,9 @@ CLI 与状态清单使用短 ID；落到磁盘的是雾凇 schema 名。algebra 
 
 | 层 | 谁在这层 | 谁来切 | 本工具怎么验证 |
 |---|---|---|---|
-| **中英**（引擎内） | rime 的 `ascii_mode` | **左右 Shift**（`commit_code`，受管手感项） | `fcitx5-remote` 仍是 `2`（不变激活态）；人工按 Shift 看候选框 |
+| **中英**（引擎内） | rime 的 `ascii_mode` | 右 Shift（`commit_code`，受管手感项）。左 Shift 在 rime 里是 `noop`（§5.4），因此**不会**在这里生效 | `fcitx5-remote` 三态 1↔2；人工按 Shift 看候选框 |
 | **Rime schema** | `rime_ice` / `double_pinyin` / … | **`F4`** 呼出方案选单 | 人工按；读 `user.yaml` 的 `previously_selected_schema`。**禁止**用 `fcitx5-remote -s <schema>` |
-| **fcitx5 IM** | profile 里的 IM 组（默认 `[rime keyboard-us]`，§6.1） | 触发键 **`Ctrl+Space`** 在组内切到 `keyboard-us`；单 IM 组里它**不动作**（`canTrigger()` 要求 >1） | `fcitx5-remote` 三态 1↔2 |
+| **fcitx5 IM** | profile 里的 IM 组（默认 `[rime keyboard-us]`，§6.1） | **`Super+I`** 换当前 IM（Omarchy 的 `omarchy-input-method cycle`）；左 Shift 只开/关输入法、不改 IM（落点见 §2.3 末）；旧版用的是 `Ctrl+Space` | `fcitx5-remote` 三态 1↔2 |
 
 三条轴互不重叠：中英在引擎里（不受 fcitx5 激活态影响），方案在 rime 里（不影响其它应用），
 停用是 fcitx5 层（**停用时 rime 收不到键，方案与中英热键都不生效**，这是预期）。
@@ -98,17 +99,16 @@ CLI 与状态清单使用短 ID；落到磁盘的是雾凇 schema 名。algebra 
 - **`F4` 是方案选单唯一入口。** 上游 rime-ice 一次绑了 `F4`/`Control+grave`/`Control+Shift+grave`，
   而 `Control+grave` 与 VS Code 的终端开关、JetBrains 的 Quick switch scheme 直接冲突——误触一次就多开一个终端，
   所以只留 `F4`（`catalog.SwitcherHotkeys`）。
-- **`Ctrl+Space` 做 fcitx5 触发键**（中文输入法的传统键，fcitx4/Windows/搜狗一致）。它唯一的冲突是 herdr 的前缀，
-  而这个冲突**在配置层消掉**：Omarchy 出厂给 herdr `prefix = "ctrl+space"`（
-  `/usr/share/omarchy/config/herdr/config.toml:18`），把它改成 `ctrl+b`（herdr 内置默认、tmux 习惯）后两边不再抢。其余候选都被占：`Super+space`/`Super+Alt+space`/`Super+Ctrl+space` 是 Omarchy 菜单与
-  背景切换（且合成器先接 `SUPER+*`，输入法永远看不到），`Alt+space` 是"窗口菜单"的通用约定，
-  `Ctrl+\`` 属编辑器。
-- **本仓库只负责 fcitx5 侧的触发键**；herdr 前缀属于宿主工具配置，不在这里管理。
-- **但冲突要能看见**（新装 Omarchy 就是冲突现场：出厂 herdr = `ctrl+space`）。`observe.HerdrPrefix` 按 herdr 自己的解析顺序
-  读 `$HERDR_CONFIG_PATH` → `~/.config/herdr/config.toml`（缺省即 herdr 内置 `ctrl+b`，无冲突），
-  `HerdrConflict` 与受管触发键按 `Ctrl`/`Control` 归一比较，命中结果进 `status`/`doctor` 的告警行、写触发键时也打一条
-  `[警告]`。**只告警、不改别人的配置、也不偷偷换键**——换哪一边是用户的决定。
-- 触发键的语义由**组内 IM 数**决定（§6.1）：默认两项 `[rime keyboard-us]` 时 `Ctrl+Space` 切到英文键盘，此时 rime 收不到键（Shift / F4 不生效）；**单 IM 组里它完全不动作**（fcitx5 `canTrigger()` 要求 >1），这不是故障。
+- **热键归 Omarchy（4.5 起）**：`Super+I` 循环、`Super+Shift+I` 反向、左 Shift 开/关输入法（`AltTriggerKeys=Shift_L`，不改组内 IM）、
+  `Ctrl+Space` 在终端里是 non-consuming 直通。本仓库**不再写触发键**——上游 `configure.py::without_ctrl_space()`
+  每次 `--defaults` 都会删掉 `Control+space`，迁移脚本还会把空的 `[Hotkey/AltTriggerKeys]` 段填回 `0=Shift_L`，
+  长期打补丁等于永久战争（`dev-notes.md` P10）。
+- **旧的 `Ctrl+Space` 只在 4.0 仍然写入**（那些机器上热键本来就归我们，`hotkey.EnsureTrigger` 原样保留）。
+  4.5+ 上收敛只**删**掉 `Control+space` / `Alt+space`，且绝不创建 `[Hotkey/AltTriggerKeys]`。
+- **冲突仍要能看见**：`observe.HerdrPrefix` 按 herdr 自己的解析顺序读 `$HERDR_CONFIG_PATH` →
+  `~/.config/herdr/config.toml`，`HerdrConflict` 与之归一比较；旧路径写触发键时才告警（4.5+ 没有我们写的键，
+  告警只会是噪音）。
+- 组内 IM 数仍是前提（§6.1）：fcitx5 的所有 IM 热键都以 `canTrigger()`（条目 > 1）为前提，Omarchy 的热键也一样。
 
 ---
 
@@ -132,12 +132,12 @@ L3 patches（字节已一致 → 跳过，不碰 mtime）→ SaveLedger
 if deploy(产物缺失/配置变更) or 宿主(profile/hotkey/drop-in) 有工作:
   stop fcitx5                        # 唯一一次 stop，窗口一直开到 start
        rime_deployer --build         # 写盘，必须在 fcitx5 停着时做；产物齐且配置未变时跳过
-       L4 写 profile + hotkey + drop-in（drop-in 由原 unit ExecStart 派生）
+       L4 写 profile（+ 旧路径的 hotkey/drop-in；4.5+ 只删旧触发键残留）
        daemon-reload
   start fcitx5                       # defer 守门：任何提前返回都会 start，start 失败 → 退出码 1
   SaveLedger
-L4 tray pin（数组直接写入 shell.json + 重启外壳刷新 SNI）
-L4 候选框主题（classicui.conf + theme-set 钩子 + 立即生成 + DBus 热重载）
+L4 顶栏指示器（4.5+：omarchy bar put + 删旧 drop-in/pin；旧路径：写 drop-in + pin + 重启外壳）
+L4 候选框主题（classicui.conf + 交给 omarchy-theme-set-fcitx5 + 退役旧钩子/SVG + DBus 热重载）
 L5 verify（只读，build 缺失为硬失败）
 if L5 未达终态: SaveLedger（只存事实）; return 1     # 不推进 Desired
 write state.json（含 Desired）+ 备份轮转（留最近 5 个）
@@ -154,8 +154,8 @@ unlock
 | L2 数据资产 | 雾凇 `full.zip` + 万象 `.gram`，带版本号和 sha256 | 下载 → 校验 → 解压/落位 |
 | L3 配置覆盖 | 受管 `*.custom.yaml`（集合随 Layout 变） | 整文件生成（所有权协议见 §5） |
 | （缝）部署 | `rime_deployer --build $RIME /usr/share/rime-data $RIME/build` | **fcitx5 必须已停** |
-| L4 宿主集成 | profile、触发键、drop-in、start、**顶栏图标、候选框主题**；可选的 X11 HiDPI 兼容模式 | 一个 stop 窗口（见 §6.0）；候选框主题在 stop 窗口之外热重载 |
-| L5 验证 | 编译产物、模型编入、IM 三态、托盘可见、候选框主题、人工 checklist | **只读** |
+| L4 宿主集成 | profile、start、**顶栏输入法指示器、候选框主题**（4.5+ 三者都由 Omarchy 提供，本工具只确认与清理）；旧路径另含触发键与 drop-in；可选的 X11 HiDPI 兼容模式 | 一个 stop 窗口（见 §6.0）；指示器与候选框主题在 stop 窗口之外处理 |
+| L5 验证 | 编译产物、模型编入、IM 三态、指示器在栏上、候选框主题、人工 checklist | **只读** |
 
 > **L1 仓库（收敛不接管镜像）**：三个 L1 包都在 **`extra`** 仓库（`stable-mirror.omarchy.org/extra`）。`pacman -S` 的镜像来自系统 `/etc/pacman.d/mirrorlist` + `/etc/pacman.conf`，`install`/`update`/`switch` 收敛**不接管、不修改**。镜像改动的唯一入口是独立的 **`source`** 命令（§7）。`--mirror` 只作用于 **L2 资产**，对 L1 无效。Omarchy 官方 `stable-mirror.omarchy.org` / `pkgs.omarchy.org` 走 Cloudflare CDN，大陆直连可能不稳；处理方案：代理 / `XferCommand` 重试续传 / `source --preset cn` 把 `core`+`extra` 指向国内 stock-Arch 镜像——注意 stable 是**锁版本快照**有漂移风险，`[omarchy]` 仓库**无国内镜像**。
 
@@ -173,9 +173,10 @@ internal/pkgs      pacman -S --needed（sudo exec）
 internal/assets    L2：下载→校验→缓存→解压（含 zip 安全扫描）
 internal/patches   L3：受管 custom.yaml 模板生成 + 所有权哈希记账
 internal/profile   fcitx5 profile INI 宽容读/严格写
-internal/hotkey    [Hotkey] 写入 + Shift_L 白名单校验
-internal/tray      L4 顶栏：专用 drop-in + shell.json pinned 读/并/写数组 + 重启外壳
-internal/theme     L4 候选框主题：classicui.conf + theme-set 钩子 + 生成目录 + 热重载
+internal/hotkey    触发键读 + 白名单校验（写仅旧路径；4.5+ 只删残留 Control+space）
+internal/tray      L4 顶栏（旧路径）：专用 drop-in + shell.json pinned 读/并/写数组 + 重启外壳；4.5+ 只用来删残留
+internal/bar       L4 顶栏（4.5+）：shell.json 里 omarchy.keyboard-layout 是否在栏上 + `omarchy bar put`
+internal/theme     L4 候选框主题：classicui.conf 的键 + 交给 omarchy-theme-set-fcitx5 + 退役旧钩子/SVG + 热重载
 internal/hidpi     L4 可选 X11 HiDPI：~/.Xresources 行级块 + 登录/监听 user 单元 + Xft.dpi 发布
 internal/deploy    rime_deployer --build $RIME /usr/share/rime-data $RIME/build
 internal/service   systemctl --user 封装（omarchy-fcitx5 优先）
@@ -276,7 +277,11 @@ L2 解压规则：
 
 - `menu/page_size: 9`（候选词个数，覆盖上游默认 5）
 - `,` `.` 翻页（`key_binder/bindings/+`：comma→`Page_Up`, period→`Page_Down`）
-- 中英切换：`ascii_composer/switch_key/Shift_L` **与** `Shift_R` = `commit_code`（左右 Shift 都「先把已打编码上屏，再切 `ascii_mode`」）；`Control_L/R` = `noop`（防 Ctrl 尾随误切）；`good_old_caps_lock: true`（CapsLock 只切大写）
+- 中英切换（引擎内）：`ascii_composer/switch_key/Shift_R` = `commit_code`（「先把已打编码上屏，再切 `ascii_mode`」）；`Control_L/R` = `noop`（防 Ctrl 尾随误切）；`good_old_caps_lock: true`（CapsLock 只切大写）
+- **`ascii_composer/switch_key/Shift_L` = `noop`**（4.5 起）：左 Shift 归 fcitx5 的 `AltTriggerKeys`（开/关输入法）。
+  rime 出厂值是 `Shift_L: commit_code`，两边都处理同一个键时，可见结果取决于「输入法是开还是关」和「当前 IM 是 rime 还是键盘」——
+  同一个键有时进 rime、有时进英文键盘、有时要按两下（真机 2026-11-05）。写 `noop` 让左 Shift 只有一个主人：
+  **左 Shift = 开/关输入法，右 Shift = rime 内中英，`Super+I` = 换 IM**，三条轴互不重叠（`dev-notes.md` P10）。
 - `switcher/hotkeys: [F4]`（方案选单；`Control+grave` 家族被移除，理由见 §2.3）
 - `switcher/save_options: [ascii_punct, traditionalization, emoji, search_single_char]`（**不含 `full_shape`**）
 
@@ -296,9 +301,11 @@ L2 解压规则：
 > 注：`switches/@4/reset` 只在 `Model=true`（生成 `<schema>.custom.yaml`）时落地；`--no-model` 下没有 grammar 补丁、也就没有这个文件 —— 但 `save_options` 已经把 `full_shape` 排除在记忆之外，所以仍从半角起步。
 > 注：`,.` 翻页写在 `default.custom.yaml` 对自带 `key_binder` 的方案**不一定生效**；若某方案失效需在方案层 custom 补。
 
-推荐分工（三条轴，互不重叠）：中英 = 左右 `Shift`（引擎内，受管手感项）；方案 = `F4`；`Ctrl+Space` = 在 IM 组内切到英文键盘。
+推荐分工（三条轴，互不重叠）：中英 = 右 `Shift`（引擎内，受管手感项）；左 `Shift` = **开/关输入法**（Omarchy 的 `AltTriggerKeys`，只翻 `active`，不改组内 IM）；IM = `Super+I` 循环（Omarchy 的 `omarchy-input-method cycle`）；方案 = `F4`。四者各占一个键，左 Shift 与 rime 不共享（`Shift_L: noop`），否则同一个键在不同状态下做不同的事。
 
-> **fcitx5 的硬约束（2026-11-03 以源码 + 真机确认）**：所有 IM 热键 —— `TriggerKeys`、`AltTriggerKeys`、`ActivateKeys`、`DeactivateKeys` —— 都先判 `canTrigger()`，而它是 `inputMethodList().size() > 1`。所以「组里只有 `rime`」时 `Ctrl+Space` 是**完全的 no-op**，不存在「单 IM 下开/停用」。默认组因此是两项 `[rime keyboard-us]`（`Ctrl+Space` 真的能切英文键盘）；`--single-im` 留给不需要英文键盘的人，此时中英只能靠 `Shift`。代价见 §6.2：两个 IM 会让出厂的 `AltTriggerKeys=Shift_L` 生效，必须清空。
+左 Shift 的「打开」落点由 fcitx5 决定（`Instance::inputMethod()`）：激活时用该输入上下文 `localIM_`（有就用，`Super+I` / `SetCurrentIM` 写的），否则用组 `DefaultIM`（= `rime`）；未激活时报告数组第一项（也是 `rime`）。所以「英文键盘 → 左 Shift 关 → 左 Shift 开」可能落回 rime，且顶栏指示器不反映「已关」——不是收敛漂移（`dev-notes.md` P10 附三）。
+
+> **fcitx5 的硬约束（2026-11-03 以源码 + 真机确认）**：所有 IM 热键 —— `TriggerKeys`、`AltTriggerKeys`、`ActivateKeys`、`DeactivateKeys` —— 都先判 `canTrigger()`，而它是 `inputMethodList().size() > 1`。所以「组里只有 `rime`」时 IM 热键是**完全的 no-op**，不存在「单 IM 下开/停用」。默认组因此是两项 `[rime keyboard-us]`（Omarchy 的 `Super+I` 真的能切英文键盘）；`--single-im` 只为脚本兼容保留，4.5+ 上会打警告（Omarchy 的 Setup > Typing 会报错、顶栏指示器不显示）。
 
 ---
 
@@ -310,10 +317,10 @@ L2 解压规则：
 
 1. `systemctl --user stop omarchy-fcitx5.service`（优先该单元；没有再停通用 fcitx5）
 2. `rime_deployer --build`（属部署缝，挂在这次 stop 里）
-3. 写 profile、fcitx5 `config`、专用 drop-in
+3. 写 profile；旧路径另写 fcitx5 `config` 与专用 drop-in（4.5+ 只**删**旧触发键残留，绝不写 `[Hotkey/AltTriggerKeys]`）
 4. `systemctl --user daemon-reload`
 5. `systemctl --user start omarchy-fcitx5.service`
-6. tray pin（直接写数组到 `shell.json`）+ `omarchy restart shell`（**外壳保活**，禁止 stop）
+6. 顶栏指示器（4.5+：`omarchy bar put omarchy.keyboard-layout` + 删旧 drop-in/pin；旧路径：写 pin + `omarchy restart shell`，**外壳保活**，禁止 stop）
 
 restart **不触碰**主单元文件里的 ExecStart。失败不自动回滚，不写 `state.json`；下次 converge 接着修。备份已在 stop 前做好。
 
@@ -327,13 +334,31 @@ restart **不触碰**主单元文件里的 ExecStart。失败不自动回滚，�
 - **必须能删**：v1.3.0 及更早的 `DefaultProfile` 建过 `keyboard-us`，而 `EnsureRime` 只加不删 → 老机器永远带第二个 IM，与新装机器不一致（这正是 v1.3.1 注释里 "so no two hosts agreed" 的问题）。删/重排都有备份，`--single-im` 就是显式要求删到只剩 `rime`。
 - **默认两项的理由**：fcitx5 的 `canTrigger()` 要求条目数 > 1（见 §5.4 引文），单 IM 时 `Ctrl+Space` 完全不动作；两项才让「切英文键盘」这个承诺成立。
 
-### 6.2 触发键避让
+### 6.2 热键：归 Omarchy（4.5+）
 
-Omarchy **原厂** herdr prefix 就是 Ctrl+Space，所以 **无条件** 写入触发键，不要「检测到 herdr 才写」（配置文件缺了反而漏改）。
+Omarchy 4.5+ 把 IM 热键收归上游，本仓库**不再写它们**：
 
-写 `~/.config/fcitx5/config` 的 `[Hotkey/TriggerKeys]`：受管键 `Ctrl+Space` 写入优先位，**用户自加的触发键保留在后面（合并、不吞并）**；被显式**移除**的是 `hotkey.PruneKeys` 里的 `Alt+space`（旧版本 ompinyin 写过、且是"窗口菜单"通用键），否则「换键」只在手工改过的机器上成立。键名按 `Ctrl`/`Control` 与大小写归一比较。**但 fcitx5 的 `canTrigger()` 要求组内 IM 数 > 1**：单 IM 组里这个键完全不动作（`trigger()`/`activate()`/`deactivate()` 都以 `if (!canTrigger()) return false` 开头），所以「单 IM 下 `Ctrl+Space` = 开/停用」是错的——那是 v1.3.1 之前的说法，2026-11-03 由源码 + 真机证伪（见 `dev-notes.md` P9）；默认组两项才让这个键真正可用。**INI 合并不整文件覆盖**（保留用户其它热键段）。键名白名单校验——裸 `Shift` 会被 fcitx5 **静默丢弃**。已含全部受管键则跳过。
+| 谁拥有 | 证据（本机安装路径） |
+|---|---|
+| 触发键 | `default/config/fcitx5/config`：`TriggerKeys=Zenkaku_Hankaku/Hangul`（**没有 `Ctrl+space`**）、`AltTriggerKeys=0=Shift_L`、`ActiveByDefault=False` |
+| 循环键 | `bin/omarchy-input-method cycle` + `default/hypr/bindings/input-method.lua`（`SUPER+I` / `SUPER+SHIFT+I`；终端里 `Ctrl+Space` 是 non-consuming 直通） |
+| 反悔机制 | `configure.py::without_ctrl_space()` 每次 `--defaults` 都删 `Control+space`；迁移 `migrations/1791676907.sh` 把空的 `[Hotkey/AltTriggerKeys]` 段填回 `0=Shift_L` |
 
-**同时清空 `[Hotkey/AltTriggerKeys]`**（`hotkey.EnsureAltTriggerEmpty`）：fcitx5 出厂把 `Shift_L` 放在这里（`globalconfig.cpp`，描述 "Temporarily Toggle Input Method"）。组内 IM > 1 时它与触发键**走同一个 `toggle()`**（`Instance::altTrigger` → `toggle`），于是左 Shift 与 `Ctrl+Space` 变成同一件事，rime 受管手感项 `ascii_composer/switch_key/Shift_L: commit_code` 永远收不到那个键。fcitx5 的 INI **写不出空列表值**：唯一的「无键」编码是 section 存在但没有 `N=` 子项（缺段 = 回落默认 `Shift_L`）；实测 fcitx5 5.1.23 重启不抹、`install` 收敛幂等。
+结论（D1）：写 `Control+space`、清空 `AltTriggerKeys` 都会被上游反复撤销 → **不写**。4.5+ 收敛只做一次
+**幂等清理**：删掉旧版 ompinyin 写进 `[Hotkey/TriggerKeys]` 的 `Control+space` / `Alt+space`
+（`hotkey.RemoveTriggerKey` + `hotkey.LegacyTriggerKeys`），读→写一次、备份一次。
+
+- **段留着、键删掉**：fcitx5 的 INI 里「段存在但无键」= 无触发键；缺段 = 回落出厂默认。所以删键后段保留。
+- **绝不碰 `[Hotkey/AltTriggerKeys]`**：那是 Omarchy 的 `Shift_L`（左 Shift 进出输入法），删它会让左 Shift 落回 rime，
+  与上游承诺的行为不一致。
+- 计划/doctor 文案：`触发键归 Omarchy：Super+I 循环、左 Shift 进出输入法；Ctrl+Space 留给终端`；
+  有残留时 report 出 `删除 [Hotkey/TriggerKeys] 中的 Control+space`。doctor **不再输出 `AltTriggerKeys` 行**——
+  4.5+ 上它恒真（上游每次都会写回 `Shift_L`），恒真的检查等于谎话。
+
+**旧路径（Omarchy 4.0，即 4.5 之前唯一在用的版本；`observe.OmarchyManagesIME == false`）一字不改**：那些机器上热键仍归本工具——
+`hotkey.EnsureTrigger` 无条件写 `Ctrl+Space`（herdr 出厂 prefix 也是 `ctrl+space`，冲突只告警）、
+`hotkey.EnsureAltTriggerEmpty` 清空 `[Hotkey/AltTriggerKeys]`（fcitx5 出厂 `Shift_L` 与触发键走同一个 `toggle()`，
+见 `dev-notes.md` P9）、doctor 保留 `AltTriggerKeys` 行。分支依据是**特性探测**（见 §6.4），不是版本号。
 
 ### 6.3 服务操作
 
@@ -343,52 +368,42 @@ Omarchy **原厂** herdr prefix 就是 Ctrl+Space，所以 **无条件** 写入�
 
 这个游离实例**极易被自己造出来**：服务停止时任何 `fcitx5-remote` / 总线调用都会 D-Bus 激活一个新的 fcitx5。因此存活探测只用 `pgrep` 进程探针（`FcitxRunning` / `FcitxCount`），**绝不用 `fcitx5-remote` 或总线调用探测存活**（`theme` 的 `ReloadAddonConfig` 是唯一的例外，且它只在已知 fcitx5 在跑时才发）；`verify` 也只在单元已激活时才调 `RemoteState`。
 
-### 6.4 顶栏输入法图标（必做终态）
+### 6.4 顶栏输入法指示器（必做终态，4.5+ 由 Omarchy 渲染）
 
-Omarchy 默认 `ExecStart=/usr/bin/fcitx5 --disable notificationitem`（注释：避免与 Omarchy 自绘托盘重复），因此**原厂顶栏没有输入法图标**。**取舍**：重开 = 主动接受与 Omarchy 自绘托盘的重复。之所以仍做，是因为顶栏 `omarchy.keyboard-layout` 只显示 XKB 布局（如 `us`），不反映 `rime`/英文这种 IM 级状态——要拿到「当前是中还是英」的可视信号，重开 SNI 是 v1 唯一现实手段（此取舍写入 README）。本工具把「顶栏不点 `◀` 就能看到输入法图标」做成 **L4 必做终态**：每次 `install` / `update` 都收敛到这一步，无退出选项。分两步，缺一不可：
+Omarchy 4.5+ 自己渲染输入法指示器，并且**故意关掉** fcitx5 的 SNI 托盘项：
 
-| 步 | 作用 | 不做的后果 |
-|---|---|---|
-| A. 启用 notificationitem | fcitx5 发出 SNI 托盘项 | 顶栏完全没有输入法图标 |
-| B. pin `Fcitx` | 图标常驻顶栏，不进抽屉 | 图标在 `◀` 抽屉里，不点展开看不见 |
+| 证据 | 内容 |
+|---|---|
+| `default/systemd/user/omarchy-fcitx5.service` | `ExecStart=/usr/bin/fcitx5 --replace --disable notificationitem`，注释写明 "notificationitem duplicates the tray entry omarchy already renders itself" |
+| `shell/plugins/bar/widgets/KeyboardLayout.qml` + `shell/Commons/InputMethodState.qml` + `default/input-methods/indicator.py` | 指示器本体，读 fcitx5 的 IM 状态 |
+| `config/omarchy/shell.json` | 默认右区含 `omarchy.keyboard-layout` |
 
-**A. 启用 notificationitem**（systemd user drop-in，**专用文件名**）：
+所以终态从「造一个图标」变成「**确认图标在栏上 + 清掉旧产物**」：
 
-```ini
-# ~/.config/systemd/user/omarchy-fcitx5.service.d/ompinyin-notificationitem.conf
-[Service]
-ExecStart=
-ExecStart=/usr/bin/fcitx5
-```
+- `internal/bar`：`IndicatorPresent(shellJSON)`（纯函数，扫 `bar.layout.{left,center,right}` 找
+  `id == "omarchy.keyboard-layout"`）+ `EnsureIndicator()`（`omarchy bar put omarchy.keyboard-layout`，幂等；
+  外壳没在跑直接返回 nil——默认配置本来就带这个 widget）。
+- `tray.RemovePinned`（读 → 去 `Fcitx` → 原子写，带与旧 `SetPinned` 相同的「写入后重读比对、最多 3 次」竞态保护）：
+  清掉旧版 ompinyin 的 SNI pin；`tray.RemoveDropIn` 清 drop-in。两者都是「否则顶栏会出现两个图标」的那一半。
+- **drop-in 的删除必须在 stop 窗口内**：文件删了、跑着的 fcitx5 并不会忘记它（旧 ExecStart 已经生效，只有重启才重新读），
+  所以 4.5+ 的 `NeedHost` 也含 `c.DropInExists`，删除发生在 `daemon-reload` 之前、`start` 之前。放在窗口外删
+  = 「两个图标留到下次登录」，而 `NeedHost` 不含它的话下次运行连窗口都不会开。
+- plan 谓词：`NeedTray = !BarIndicator || StaleTray`，步骤 `顶栏输入法指示器（omarchy.keyboard-layout）+ 清理旧 drop-in/pin`
+  （JSON key 仍叫 `tray`）。`StaleTray` = drop-in 存在 **或** pinned 含 `Fcitx` **或** 旧 theme hook 存在。
+  `PinnedHasFc` / `ThemeHookOK` 不需要重启，只进 `NeedTray` / `NeedTheme`，不进 `NeedHost`。
+- L5/doctor：一行 `顶栏输入法指示器`。OK 三分支：widget 在 → OK；不在且**外壳在跑** → 失败（收敛本该放回去），
+  Detail 给出精确修复 `omarchy bar put omarchy.keyboard-layout`；不在且**外壳没跑** → OK + 说明
+  「外壳未运行，无法确认（Omarchy 默认配置已含该 widget）」——外壳没跑时 `bar put` 是 no-op，红在这里是
+  一次运行也不可能清掉的假红。有残留时上述三种 Detail 都点名。`HostReport` 只增字段 `barIndicator` /
+  `staleTrayArtifacts`；`dropInOK` / `pinnedHasFcitx` 保留不改名，但 4.5+ 上语义是「残留」（不是终态）。
+- **边界**：`omarchy bar put` 需要外壳在跑；不在跑时只能靠 Omarchy 默认配置，doctor 会说「无法确认」。
+  `◀` 抽屉的渲染仍由 Omarchy 决定，不在这里 patch。
 
-不用 `override.conf`，也不用 `systemctl revert`：`revert` 会清掉该单元 **整个** `.d/`（用户自己的其它 drop-in 一起没）。`daemon-reload` 后走 stop→start。仅 `uninstall`：删这一份 conf + daemon-reload + stop→start。
-
-**ExecStart 派生而非硬编码**：drop-in 内容由原 unit 的 `ExecStart` 行剥离 `--disable notificationitem` 后派生（`tray.DeriveDropInContent`），二进制路径与其它 flag 原样保留。unit 不可读时回退静态内容 `/usr/bin/fcitx5`。
-
-**B. 固定到顶栏（读→并→写数组进 shell.json，不手改其它内容）**：
-
-fcitx5 SNI 的 `Id` = **`Fcitx`**（`Tray.qml` 用 `pinnedIds.indexOf(item.id)` **精准匹配**，大小写敏感，**非总线号**）。
-
-收敛协议是**读 pinned → 并入 `Fcitx` → 把数组直接原子写回 `shell.json`**（`tray.SetPinned`）**，禁止裸覆盖**（会吞掉用户已有 pin，且 `omarchy bar set` 会把数组强转成字符串，Tray.qml 只认数组 → 图标 pin 不上）：
-
-```text
-# 读 ~/.config/omarchy/shell.json → bar.layout.{left,center,right} 中
-# id == "omarchy.tray" 的 pinned → 并入 "Fcitx"（已在则不动）→ 原子写回数组
-# 例：原 pinned 为 ["Foo"] 时，写成 ["Foo","Fcitx"]
-```
-
-**为什么直接写数组**：Omarchy 4.0.1 上**同时** `omarchy bar set ... --json` 和 `omarchy shell shell setBarWidget` 都会把数组值强转成字符串；`Tray.qml` 的 `pinnedIds` 是 `settings.pinned instanceof Array ? ... : []`，字符串会落到 `[]` → **图标不 pin**。写数组是唯一真正 pin 上的方式。
-
-写 pin 后运行 `tray.RestartShell`（`omarchy restart shell`）：fcitx5 的 notificationitem 是本收敛才启用的，运行中的外壳不会自行刷新其 SNI 显示（会一直显示 "Keyboard - English (US)"），需重启外壳才重枚举并显示 rime。**仅当本次新增了 pin 时才重启**（已 pin 则跳过，避免无谓 churn）。
-
-仅 `uninstall`：读 pinned → 去掉 `"Fcitx"`（空数组也要写回）→ 写回数组；**不主动 RestartShell**——外壳如在运行，FileView 监控会热加载并隐藏该托盘项；未运行则提示启动后自动应用。
-
-**边界**：
-
-- 外壳没在跑时无法写 pin（下拉失败）。T1 容器走 `--os-override` 时本层会失败，属预期，T3/T4 才验图标。
-- `◀` 展开按钮只要有任何托盘项就渲染（空抽屉也显）。去掉空 `◀` 需 patch `Tray.qml`（系统文件、`omarchy update` 覆盖，**域外**）。
-- doctor：专用 drop-in 存在、`notificationitem` addon 已加载、`omarchy.tray.pinned` 数组含 `Fcitx`。缺任一项 = 未达终态。
-- **foot 内 IM 图标不刷新**：早期版本（Omarchy < 4.0.2）限，仅显示问题（打字/切换/候选均正常）；**Omarchy 4.0.2 已解除**（foot 内 `Ctrl+Space` 开关输入法、`Shift` 切中英，顶栏图标自动更新）。
+**旧路径（4.0）一字不改**：`tray.WriteDropIn`（内容由原 unit 的 `ExecStart` 派生，剥掉
+`--disable notificationitem`）+ `tray.SetPinned`（读 pinned → 并入 `Fcitx` → 原子写数组，`omarchy bar set` 会把数组
+强转成字符串，`Tray.qml` 只认数组）+ `tray.RestartShell`（新增 pin 时才重启外壳刷新 SNI）。
+分支依据：`observe.OmarchyManagesIME`（`/usr/share/omarchy/default/input-methods/indicator.py` 是否存在）——
+**版本号不可用**：4.5.0 包里的 `/usr/share/omarchy/version` 仍写着 `4.0.0.alpha`。
 
 ### 6.5 环境变量红线与活目录
 
@@ -400,17 +415,28 @@ fcitx5 SNI 的 `Id` = **`Fcitx`**（`Tray.qml` 用 `pinnedIds.indexOf(item.id)` 
 
 候选框（fcitx5 classicui 候选词窗口）**默认**跟随当前 Omarchy 主题配色，换主题即自动刷新、无需重启 fcitx5。**所有权分工**——颜色映射逻辑只有一份（在钩子脚本里，Go 侧不重复实现）：
 
+**4.5 起配色交还上游**：`default/themed/fcitx5-theme.conf.tpl` → `omarchy-theme-set-templates` →
+`~/.local/state/omarchy/current/theme/fcitx5-theme.conf` → `bin/omarchy-theme-set-fcitx5`（`omarchy theme set`
+会调用，写 `~/.local/share/fcitx5/themes/omarchy/` 并设 classicui `Theme=omarchy`）。本仓库原来的 theme-set 钩子
+与它**并发写同一批文件**（现网已观察到混装，`dev-notes.md` P10），所以钩子退役。
+
 | 谁拥有 | 内容 | 说明 |
 |---|---|---|
-| ompinyin（受管、记账） | `~/.config/fcitx5/conf/classicui.conf` | 整文件生成：`Theme=omarchy` / `UseDarkTheme=False` / `UseAccentColor=False` + UI 字体；走 §5.1 所有权协议 |
-| ompinyin（受管、记账） | `~/.config/omarchy/hooks/theme-set.d/fcitx5-theme` | bash 钩子，`omarchy theme set` 触发；`omarchy-hook` 以 `bash <file>` 运行 |
-| 钩子（运行时） | `~/.local/share/fcitx5/themes/omarchy/` | 从当前 `colors.toml` 生成 theme.conf + 圆角 SVG（面板/高亮/翻页箭头）；**不入账**（换主题字节合法变化），uninstall 显式删除 |
+| ompinyin（受管、记账） | `~/.config/fcitx5/conf/classicui.conf` | 只受管 6 个键：`Theme=omarchy` / `DarkTheme` / `UseDarkTheme=False` / `UseAccentColor=False` / `Font` / `MenuFont`；其余键原样保留（§5.1 键级拥有） |
+| Omarchy | `~/.local/share/fcitx5/themes/omarchy/` | `omarchy-theme-set-fcitx5` 生成 theme.conf + 资源；**不入账、不删**。ompinyin 只删自己曾经生成过的 `background.svg` / `highlight.svg` |
+| （退役） | `~/.config/omarchy/hooks/theme-set.d/fcitx5-theme` | 旧版 ompinyin 装的钩子：收敛与 uninstall 都会删（`theme.RetireArtifacts`），并从账本里退役 `theme.HookRelPath` |
 
 - **颜色映射**（验证过，见 fcitx5 theme.cpp `populateColor`）：面板=`background`+`lighter_background` 边框；选中候选=`accent` 圆角高亮，文字按亮度**自动取对比色**（亮 accent→深字，暗 accent→浅字；`lum()` = ITU-R BT.601）；其余候选/序号/注释=`foreground`/`dark_foreground`；预编辑高亮=`selection`。SVG 9-slice（Radius=边框 margin），librsvg 矢量缩放不糊。
 - **热重载**：`fcitx5-remote -r` 只重载全局配置、**不会**重读 `classicui.conf`/主题（真机验证过：重载后仍旧主题）。必须走 DBus `org.fcitx.Fcitx.Controller1.ReloadAddonConfig classicui`（fcitx5-configtool 同款）；钩子与收敛后的 `theme.Reload` 都用它，fcitx5 未跑时静默。
-- **收敛时序**：在 stop 窗口**之外**（L4 tray 之后、L5 之前）——这些文件 reload 即生效，无需重启。首次安装立即跑一次钩子按当前主题生成；此后换主题由钩子自己完成，`status` 不该报漂移（生成目录不入账）。
+- **收敛时序**：在 stop 窗口**之外**（L4 顶栏之后、L5 之前）——这些文件 reload 即生效，无需重启。顺序是
+  「先退役旧钩子/SVG → 写 classicui 键 → `omarchy-theme-set-fcitx5 --activate` → DBus 热重载」，
+  这样上游生成器可以覆盖我们删掉的同名文件。
+- **计划谓词**：`NeedTheme = !ThemeEqual || ThemeHookOK`（`ThemeEqual` = classicui 字节一致；钩子存在即算工作）。
+  生成目录**不参与判定**：4.5 上它归 Omarchy，不是我们能收敛的东西。
 - **受管文件的字体**：`Font`/`MenuFont` 取自 `omarchy-font-current`（Pango 会经 fontconfig 回退 CJK 字体）；取不到用 `Sans`。
-- **边界**：当前 Omarchy 主题颜色（`~/.local/state/omarchy/current/theme/colors.toml` + `omarchy-theme-color`）缺失时钩子静默退出、候选框保持默认外观，`doctor` 报「候选框主题」未达标；UI 字体换肤（Tray/inline preedit 等）不属于本终态。
+- **边界**：`omarchy-theme-set-fcitx5` 不存在（4.0）时 `theme.ApplyUpstream` 返回可忽略的
+  `theme.ErrNoUpstream`：classicui 指向一个不存在的主题名，fcitx5 自然回落默认外观（4.5 前的机器失去候选框跟随主题，
+  属交给上游的代价）。UI 字体换肤（Tray/inline preedit 等）不属于本终态。
 
 ### 6.7 可选 X11 HiDPI 兼容模式（ClassicUI 候选框）
 
@@ -451,10 +477,10 @@ ompinyin update                            # L2 资产刷新到最新并重编�
 ompinyin switch --dsp ID [--dsp-default]   # 改/加双拼（重写 schema_list + 反查跟随 Primary；--mirror/-b/--dry-run [--json] 可用）
 ompinyin switch --dsp none                 # 去掉双拼，回到仅全拼
 ompinyin switch --full                     # 全拼改回 schema_list[0]（已装的双拼留在 Extra）
-ompinyin status                            # 现状 vs 终态 diff（含布局 / 资产版本 / 托盘）
-ompinyin doctor                            # 服务健康 / IM 三态 / 环境变量红线 / 触发键 / 顶栏图标 / 候选框主题 / X11 HiDPI / 遗留目录
+ompinyin status                            # 现状 vs 终态 diff（含布局 / 资产版本 / 顶栏指示器）
+ompinyin doctor                            # 服务健康 / IM 三态 / 环境变量红线 / 热键 / 顶栏指示器 / 候选框主题 / X11 HiDPI / 遗留目录
 ompinyin clean [--legacy]                  # 清缓存 / 老路径 ~/.config/fcitx/rime 的重复模型
-ompinyin uninstall                         # 受管文件删除 + profile 移除 rime + 托盘还原 + 候选框主题还原（系统包不动，数据目录留手动）
+ompinyin uninstall                         # 受管文件删除 + profile 移除 rime + 顶栏还原（去 Fcitx pin）+ 退役旧主题产物（系统包不动，数据目录留手动）
 ompinyin source [--preset cn|upstream]     # 独立：配置 /etc/pacman.d/mirrorlist（sudo；见下）
 ompinyin version                           # 构建注入的版本号（--version / -v 同义）
 ompinyin status|doctor --json              # 机器可读输出（脚本 / CI 用）
@@ -470,7 +496,10 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 
 **`update --self`**：替换二进制——备份旧的、按 `checksums.txt` 校验 sha256、原子替换；装在 `~/.local/bin` 免权，装在 `/usr/local/bin` 等需 sudo 路径会尝试 sudo（无 tty 用 `sudo -n`）。
 
-无 `--tray-pin` / `--no-tray`。顶栏图标是必做终态，装上就有。
+无 `--tray-pin` / `--no-tray`。顶栏输入法指示器是必做终态（4.5+ 由 Omarchy 渲染，本工具保证它在栏上并清理旧产物）。
+
+`--single-im` 保留解析（脚本兼容），4.5+ 运行期打警告：组内没有 `keyboard-*` 时 Omarchy 的
+Setup > Typing > Input Methods 会报错、顶栏指示器不显示。
 
 步骤化输出 `[计划]/[完成]/[跳过]/[失败]`；失败给修复提示（`fcitx5-diagnose`、build 产物检查等）。
 
@@ -497,7 +526,7 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 
 | 层 | 内容 |
 |---|---|
-| 单测 | `catalog` 映射表；patches golden（全拼/各双拼 × 有/无模型）；profile roundtrip 四场景（缺失/无 rime/DefaultIM 错/正常）；hotkey Shift_L 校验；tray drop-in 文本 + shell.json pinned 合并（已有其它 pin 不丢）；assets 缓存命中/镜像回退/校验和不匹配/zip slip（httptest） |
+| 单测 | `catalog` 映射表；patches golden（全拼/各双拼 × 有/无模型）；profile roundtrip 四场景（缺失/无 rime/DefaultIM 错/正常）；hotkey keysym 白名单 + `RemoveTriggerKey`（删键保空段）；tray drop-in 文本 + shell.json pinned 合并/移除（已有其它 pin 不丢）；bar `IndicatorPresent`（有/无 widget/坏 JSON）；catalog `RemovedIMs`；assets 缓存命中/镜像回退/校验和不匹配/zip slip（httptest） |
 | 收敛逻辑 | 临时 HOME + fake systemctl/rime_deployer + stub `assets.ResolveStableTag` 断言终态达成（CI 可跑、绝不触网） |
 | 真机验收 | 见 §15 T0–T4 金字塔 |
 | CI | gofmt / go vet / **golangci-lint**（`.golangci.yaml`：默认集 errcheck+govet+ineffassign+staticcheck+unused，加 gofmt formatter） / `go test -race` / build 冒烟 + `ompinyin version`；绝不在 CI 跑系统操作、绝不触网（tag 解析可注入 stub，本地资产目录可离线跑） |
@@ -508,7 +537,7 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 
 ## 10. 工程化与发布
 
-- 许可证 **MIT**；README 中文优先，写明：Wayland 下 `GTK_IM_MODULE` 是反模式；F4 切方案 / 触发键切中英；顶栏图标是必做终态；`--mirror` 只管 L2、L1 镜像靠 `ompinyin source`；终端候选窗不可见属 Hyprland 渲染器问题（域外）。
+- 许可证 **MIT**；README 中文优先，写明：Wayland 下 `GTK_IM_MODULE` 是反模式；F4 切方案 / Super+I 与左 Shift 归 Omarchy；顶栏指示器由 Omarchy 提供、本工具保证它在栏上；`--mirror` 只管 L2、L1 镜像靠 `ompinyin source`；终端候选窗不可见属 Hyprland 渲染器问题（域外）。
 - goreleaser 出 amd64/arm64 静态二进制 + sha256 → GitHub Releases；可选 Omarchy 插件薄壳。
 
 ---
@@ -524,7 +553,9 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 1. **上游接口脆弱性**：依赖 `full.zip` 不含 custom.yaml。缓解 = zip 安全扫描（§5.3）。
 2. **420MB 模型下载体验**：GitHub 上游直连超时，故 `cn` 是大陆无代理用户的默认；镜像链 / 断点续传 / 超时细节见 §5.3。
 3. 终端候选窗不可见为 Hyprland 渲染器 bug，工具域外。
-4. **改 `omarchy.tray.pinned`**：写数组是整键覆盖，必须读→合并→写回，否则吞 pin。外壳没在跑时写 pin 失败。`omarchy update` 若重排 layout，再跑一次 `ompinyin` 收敛重贴。
+4. **`omarchy.tray.pinned` / `shell.json`（仅 4.0）**：写数组是整键覆盖，必须读→合并→写回，否则吞 pin。外壳没在跑时写 pin 失败。`omarchy update` 若重排 layout，再跑一次 `ompinyin` 收敛重贴。4.5+ 只做删除（`tray.RemovePinned`），不再 pin。
+5. **4.5+ 顶栏指示器依赖外壳**：`omarchy bar put` 需要外壳在跑；不在跑时只能靠 Omarchy 默认配置，`doctor` 会说明。
+6. **`indicator.py` 被手动删除会误判为旧版本**：探测降级到旧路径（不会破坏配置，但会重新装 drop-in/pin）。
 5. 待决策：uninstall 是否加 `--purge-packages`（当前倾向不加）。
 6. **顶栏 IM 图标在 foot 内不刷新**（仅显示问题）：Omarchy < 4.0.2 的 quickshell 靠 SNI `NewIcon` 重读图标，而 IM 切换只发 `dbusmenu.LayoutUpdated`；**4.0.2 已解除**。兜底 `omarchy restart shell` 强制重枚举 SNI。
 7. **X11 HiDPI 是全局缩放权**（§6.7）：`Xft.dpi` 会让同时设了显式缩放因子的 X11/Electron 应用二次放大（实测微信 4×），且多屏混合 DPI 无单值解；故默认只诊断，`force_zero_scaling=false` 时自动 no-op。
@@ -536,8 +567,9 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 核心取舍已分别在 §1–§8 展开，这里只列**非显而易见**的结论：
 
 - **默认仅全拼**：双拼是 `--dsp`；v1 只做雾凇，万象只作 LMDG **模型**（§1.2 / §1.3 / §2.2）。
-- **顶栏图标必做**：= 启用 notificationitem **+ pin**，无退出选项；只启用不 pin，图标藏在抽屉里（§6.4）。
-- **pin 写入路径**：读→并→**写数组到 shell.json**，不手改其它字段；drop-in 用专用文件名、uninstall 只删该文件，不用 `systemctl revert`（§6.4）。
+- **顶栏输入法指示器必做**：4.5+ 由 Omarchy 渲染（`omarchy.keyboard-layout`），本工具只 `omarchy bar put` 确认 + 清掉旧 drop-in/pin，无退出选项（§6.4）。
+- **能力探测不认版本号**：`observe.OmarchyManagesIME` 看 `default/input-methods/indicator.py` 是否存在（4.5.0 包的 `version` 仍写 `4.0.0.alpha`）；旧路径在 4.0 上原样保留（§6.2/§6.4/§6.6）。
+- **热键/配色交还上游**：不写 `[Hotkey/TriggerKeys]`、不碰 `[Hotkey/AltTriggerKeys]`、不生成 fcitx5 主题；只删旧版残留并退役旧钩子（§6.2/§6.6，`dev-notes.md` P10）。
 - **L1 镜像与自升级解耦**：收敛不接管 `/etc/pacman.d/mirrorlist`（单独 `source`）；`update --self` 自升级与数据收敛解耦（§7）。
 
 ---
@@ -552,7 +584,7 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 | 收敛 | 采集现状 → diff 终态 → 只执行差异 → 复核 |
 | LMDG | Language Model Data Group；万象整句模型（`.gram`） |
 | SNI | StatusNotifierItem：fcitx5 顶栏托盘项的通信协议 |
-| `notificationitem` | fcitx5 的 SNI 托盘插件；Omarchy 默认禁用 |
+| `notificationitem` | fcitx5 的 SNI 托盘插件；Omarchy 4.5+ 默认禁用（它自己渲染 `omarchy.keyboard-layout`） |
 | Algebra | Rime 的拼音反查 / 英文派生规则（`radical_pinyin` / `melt_eng`） |
 | 所有权协议 | 以哈希记账区分「工具生成 / 用户改过 / 外来」三类文件的处理策略 |
 
@@ -584,10 +616,10 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 4. 不静默覆盖用户改过的受管文件。
 5. grammar 打进 schema_list 里每一个启用方案，参数与官方常量一致。
 6. radical / melt algebra 跟随 Primary。
-7. 改 profile / user.yaml / 专用 drop-in：`stop → 写 → start`。改 tray pinned：只走「读→并→写数组」，不手改 `shell.json` 其它字段。
-8. 触发键只写白名单 keysym（`Shift_L` 不是 `Shift`）。
+7. 改 profile / user.yaml / （旧路径的）专用 drop-in：`stop → 写 → start`。改 tray pinned 也只走「读→并/去→写数组」，不手改 `shell.json` 其它字段；4.5+ 只做「去 `Fcitx`」。
+8. 写触发键（仅 4.0）只写白名单 keysym（`Shift_L` 不是 `Shift`）；4.5+ 只删 `hotkey.LegacyTriggerKeys`，删键保留空段。
 9. `fcitx5-remote -s` 只使用 IM 名（`rime` / `keyboard-us`），从不使用 schema id。
-10. 专用 drop-in 去掉 `--disable notificationitem`，且 `omarchy.tray.pinned` 数组含 `Fcitx`；写数组必须读→合并→写回，不得丢用户已有 pin。
+10. （4.0）专用 drop-in 去掉 `--disable notificationitem`，且 `omarchy.tray.pinned` 数组含 `Fcitx`；写数组必须读→合并→写回，不得丢用户已有 pin。4.5+ 的终态相反：这两样都必须**不存在**，终态是 `omarchy.keyboard-layout` 在 bar 上。
 11. 除 `pacman` 外不以 root 跑；`source` 改 mirrorlist 也只经 sudo。
 12. zip 条目不得含 `..` 或绝对路径。
 13. 计划与执行共用同一组谓词：已收敛的重跑不重解、不重写字节一致的受管文件、不开 stop 窗口、不建备份目录。
@@ -596,12 +628,12 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 16. `install` 以 state.json 的 `Desired` 为基线，只覆盖命令行上**显式出现**的选项；不得静默重置用户选过的 `--dsp` / `--no-model` / `--channel`。
 17. `.part` 只能同源续传（`.part.src` 记录来源 URL，换源即删）；下载必须过形状护栏（`MinBytes` + 魔数 + `Content-Length` 比对）后才能进缓存。
 18. 写 fcitx5 `profile` 时 `GroupOrder` 永远居末，`Groups/0/Items/N` 永远从 0 连续编号（不留空洞）。
-19. 专用 drop-in 的路径**跟随发现的 unit**（`fcitx5.service` 就写 `fcitx5.service.d/`），且 L5 校验的是**内容**（ExecStart 不再 `--disable notificationitem`），不是文件存在。
+19. （4.0）专用 drop-in 的路径**跟随发现的 unit**（`fcitx5.service` 就写 `fcitx5.service.d/`），且 L5 校验的是**内容**（ExecStart 不再 `--disable notificationitem`），不是文件存在。4.5+ 删这份 drop-in 并删空掉的 `.d/`，但绝不删同目录下用户的其它 drop-in。
 20. 孤儿受管文件 = 账本 − 期望集合，每次收敛都清（不只 `Model=false`）；只删账本记过的文件，别人写的永不删。
 21. 备份失败即拒绝该次覆盖/删除（§5.1「先备份后写」是硬承诺，错误不得丢弃）；覆盖、删除与 `uninstall` 都适用。
 22. 预检必须拦 root 与缺失的 `rime_deployer`/`fcitx5-remote`/`omarchy`；`--os-override` 任意非空值即绕过 ID 检查并告警。
 23. SIGINT/SIGTERM 走 context 取消（第二次信号硬退出 130），使 stop 窗口的 defer 仍能收尾；同一 context 经 `execcmd` 绑定到所有 exec seam，子进程（rime_deployer/systemctl/pacman/sudo/DBus）一并被终止，不留孤儿进程与 stop 窗口竞争。
-24. 候选框主题：颜色映射唯一来源是 theme-set 钩子脚本（Go 侧不重复）；classicui.conf 与钩子入账、按 §5.1 协议覆盖；生成目录不入账但 uninstall 显式删除；热重载只用 `ReloadAddonConfig`（`fcitx5-remote -r` 不重读 addon 配置）。
+24. 候选框主题：颜色映射的唯一来源是 **Omarchy 的 `omarchy-theme-set-fcitx5`**（Go 侧不重复实现）；ompinyin 只拥有 `classicui.conf` 的 6 个键（入账、按 §5.1 覆盖），退役自己的旧钩子与两个 SVG（`theme.RetireArtifacts`），**不删** `themes/omarchy/` 里 Omarchy 生成的任何文件；热重载只用 `ReloadAddonConfig`（`fcitx5-remote -r` 不重读 addon 配置）。
 25. X11 HiDPI（§6.7）默认只诊断：`--x11-hidpi` 未显式给出时，收敛绝不写 `~/.Xresources`、不装 `xorg-xrdb`、不装两个 user 单元；`Desired.X11HiDPI` 由且仅由命令行显式 flag 置位。
 26. 已 opt-in 的 X11 HiDPI 是**行级拥有**（marker 块内仅 `Xft.dpi`）；`monitors.lua` 与 Hyprland 配置只读不写；`classicui.conf` 永不写。撤销（`--no-x11-hidpi`）先禁 path 单元再删文件；`ApplyX11HiDPI` 在未 opt-in 时 no-op。
 27. X11 HiDPI（§6.7）以 Hyprland `xwayland:force_zero_scaling` 为前置：为 `false`（合成器已缩放 X11）时本模式恒为 no-op——不写 `~/.Xresources`、不装 `xorg-xrdb`、不发布 `Xft.dpi`，plan/doctor 说明原因。`Xft.dpi` 是全局 X11 缩放权，禁止与显式 toolkit 因子叠加。
@@ -609,5 +641,5 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 29. 启动服务前先清掉占着 `org.fcitx.Fcitx5` 的游离实例，且**仅当单元未激活时**清（`Start` 是幂等关窗调用，不得误杀健康实例）；清完必须确认它已让出总线名再 start。存活性探测只走进程探针（`pgrep`），**绝不用 `fcitx5-remote`/总线调用**——服务停止时那会 D-Bus 激活一个新的游离实例，正是本故障的成因。
 30. L5 的「服务在跑」判定不得只看 `systemctl --user is-active` 的快照：`Restart=always` 下濒死实例会让它读到几百毫秒的 `active`。单元自称激活却存在**多于一个** fcitx5 进程（`FcitxCount > 1`）即与游离实例抖动共存，L5 必须失败——`install` 绝不能报「终态收敛完成」而 `doctor` 立刻报两项不达标。
 31. 自升级替换文件必须**落进目标目录再 rename**（copy → 同目录 rename），**绝不**从暂存目录直接 `rename(2)` 到二进制：暂存用 `$TMPDIR`（Omarchy 上是 tmpfs），二进制在 `$HOME`/`/usr/local/bin`（btrfs/root fs），跨挂载 rename 返回 `EXDEV`。替换后必须仍是 `0755`（`CopyFile` 写 0644），失败不得在二进制旁留 `.*.new`。
-32. fcitx5 输入法组是终态（`Desired.IMs`）：收敛必须增删 + 按声明顺序重排条目（`profile.ConvergeGroup`），并保持 `DefaultIM=rime`、`GroupOrder` 居末、条目 `0..n-1` 连续。理由：所有 IM 热键都以 `canTrigger()`（条目数 > 1）为前提，条目集合一改，`Ctrl+Space` 与左 Shift 的语义就变。
-33. `[Hotkey/AltTriggerKeys]` 必须是**存在且为空**的段：fcitx5 出厂 `Shift_L` 会与 rime 的 `Shift_L: commit_code` 抢同一个键（>1 IM 时走同一个 `toggle()`）；空列表只能编码成「空 section」，缺段等于回落到默认值。
+32. fcitx5 输入法组**始终**是终态（`Desired.IMs`）：收敛必须增删 + 按声明顺序重排条目（`profile.ConvergeGroup`），并保持 `DefaultIM=rime`、`GroupOrder` 居末、条目 `0..n-1` 连续——**热键、图标、主题交还上游，组形状没有**。理由：所有 IM 热键都以 `canTrigger()`（条目数 > 1）为前提，条目集合一改，`Super+I` / 左 Shift 落到哪个 IM 就变。被移出的引擎（例如安装器自己选的 `pinyin`）**引擎与包保留**，plan/doctor 必须点名并给出 `omarchy setup input <id>` 的加回方式（D2）。
+33. （4.0）`[Hotkey/AltTriggerKeys]` 必须是**存在且为空**的段：fcitx5 出厂 `Shift_L` 会与 rime 的 `Shift_L: commit_code` 抢同一个键（>1 IM 时走同一个 `toggle()`）。4.5+ **反过来**：该段归 Omarchy（`0=Shift_L`，左 Shift 进出输入法），ompinyin 绝不创建、清空或断言它；同时绝不写 `[Hotkey/TriggerKeys]`，只删旧版残留的 `Control+space`/`Alt+space`。
