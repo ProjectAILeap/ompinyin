@@ -17,14 +17,31 @@ ompinyin doctor     # 体检：服务 / 输入法状态 / 顶栏 / 候选框主�
 | 我想 | 按键 |
 |---|---|
 | 打中文 | 直接打。默认是**雾凇全拼** |
-| 临时打英文（不切换输入法） | 按一下**左/右 Shift**（会把正在打的编码先上屏） |
-| 彻底关掉输入法、用键盘布局打 | **Ctrl+Space**（再按一次回来） |
+| 临时打英文（不切换输入法） | 按一下**右 Shift**（会把正在打的编码先上屏；只在 rime 内生效） |
+| 开/关输入法（关掉后按键盘就是英文） | **左 Shift**（再按一次开回来；用哪个输入法见下表） |
+| 换成英文键盘输入法 / 换回 rime | **Super+I** 循环（Omarchy 4.5+ 的默认键位） |
 | 换方案（全拼 ↔ 双拼） | **F4**，在弹出的「方案选单」里选 |
 | 翻页 | `,` `.`（或 `-` `=`，取决于方案） |
 | 候选词个数 | 默认每页 9 个 |
 
-> 顶栏图标只反映「输入法开/关」，不显示全拼/双拼——方案切换在 F4 里。
-> 三个键互不干扰：Shift 只影响 rime 内部（候选框照常出现），Ctrl+Space 关掉输入法后 Shift/F4 都不再生效，F4 只换方案不换中英。
+> 顶栏输入法指示器由 Omarchy 渲染，显示的是「当前输入法」而不是「开/关」（关掉输入法时它仍显示 rime 的标记），也不显示全拼/双拼——方案切换在 F4 里。
+> 四个键各管一件事，不重叠：右 Shift 只在 rime 内部切中英（候选框照常出现）；左 Shift 只开/关输入法；
+> Super+I 只换「当前是哪个输入法」；F4 只换方案。输入法关掉后 Shift/F4 都不再生效。
+> 左 Shift 在 rime 里被显式设成 `noop`，所以它**永远**不会同时触发 rime 内的切换——这正是 4.5 早期版本「左 Shift 时灵时不灵」的原因。
+> `Ctrl+Space` 从 4.5 起留给终端（那里它是直通键）。Omarchy 4.0（4.5 之前）上仍是 `Ctrl+Space` 切输入法、左/右 Shift 在 rime 内切中英。
+
+### 左 Shift 打开后是哪个输入法？
+
+不是「上次那个」，而是 fcitx5 按这个规则决定的（`Instance::inputMethod()`）：
+
+| 当前状态 | 打字结果 | 顶栏指示器 |
+|---|---|---|
+| 激活，且这个窗口用 `Super+I` 显式切过 | 那个输入法（`keyboard-us` = 英文） | `EN` |
+| 激活，但这个窗口没显式切过（新窗口、刚开的应用） | 组里的 `DefaultIM` = **rime**（中文） | rime 的标记 |
+| 未激活（左 Shift 关掉了） | 键盘直出英文 | 仍显示 rime 的标记（**不反映「已关」**） |
+
+所以「`Super+I` 切到英文键盘，按左 Shift 关掉再打开，又变成中文」是正常现象：那个窗口的显式选择在换窗口/重建输入上下文后不再适用，回落到 `DefaultIM`。
+**要稳定待在英文键盘：用 `Super+I` 再切一次，别靠左 Shift。**
 
 ## 打不出中文（打出来是英文/没候选框）
 
@@ -99,7 +116,10 @@ PAM 直接判错；`full_shape` 连字母数字都会变全角，所以"密码�
 
 ## 按 Ctrl+Space 没反应 / 和 herdr 抢键
 
-`Ctrl+Space` 现在是**输入法开关**。它和 herdr 的 prefix 天生冲突，所以 herdr 的前缀改成了 **`Ctrl+b`**（tmux 习惯）。
+**Omarchy 4.5 起 `Ctrl+Space` 不是输入法开关了**：热键归 Omarchy——`Super+I` 循环输入法、左 Shift 进出输入法，
+`Ctrl+Space` 只在终端里作为直通键。想切输入法就按 `Super+I` 或左 Shift。
+
+（4.0 上 `Ctrl+Space` 仍是**输入法开关**，下面这段适用于那些机器。）它和 herdr 的 prefix 天生冲突，所以 herdr 的前缀改成了 **`Ctrl+b`**（tmux 习惯）。
 herdr 的前缀在它自己的配置里：`~/.config/herdr/config.toml` 的 `[keys] prefix`（应为 `ctrl+b`），改完跑
 `herdr server reload-config`。那条配置与输入法无关。
 
@@ -110,27 +130,41 @@ herdr 的前缀在它自己的配置里：`~/.config/herdr/config.toml` 的 `[ke
 如果按 `Ctrl+Space` 完全没反应：判据是按键前后各跑一次 `fcitx5-remote`，`2 → 1` 说明生效，`2 → 2` 说明键没到输入法
 （个别应用会自己抢占组合键；此时用顶栏输入法图标的菜单或 `fcitx5-remote -t`）。
 
-## 右侧 Shift 不能切中英了
+## 左 Shift 时灵时不灵 / 右侧 Shift 不能切中英
 
-升级一次就好（旧版本要重建 rime 的编译产物）：
+两种情况都跑一次收敛（同时升级二进制与 rime 配置）：
 
 ```bash
 ompinyin update --self      # 升级二进制
 ompinyin install -y         # 重新编译 rime 配置
 ```
 
+判据：收敛后 `~/.local/share/fcitx5/rime/default.custom.yaml` 里应当有
+`ascii_composer/switch_key/Shift_L: noop` 与 `.../Shift_R: commit_code`——
+左 Shift 只开/关输入法，右 Shift 只在 rime 内切中英。
+
 ## 顶栏看不到输入法图标
 
-- 在 `◀` 抽屉里 → 说明只是没被 pin：`ompinyin install -y` 会补上。
-- 完全没有 → `ompinyin doctor` 看「托盘 drop-in / 托盘 pin」两行，再 `ompinyin install -y`。
+4.5+ 的图标是 Omarchy 自己的 `omarchy.keyboard-layout` 组件（不是 fcitx 的托盘项），所以：
+
+```bash
+ompinyin doctor                    # 看「顶栏输入法指示器」那一行
+omarchy bar put omarchy.keyboard-layout   # 被移出 bar 时放回去（ompinyin install 也会做）
+```
+
+只有当组里只有 1 个输入法、且只有 1 种键盘布局时，Omarchy 才会**故意**隐藏它——
+`ompinyin install --single-im` 就属于这种（4.5 会警告）。4.0（4.5 之前）走旧路径，
+看 `doctor` 的「托盘 drop-in / 托盘 pin」两行。
 
 ## 我改的配置又变回去了
 
 ompinyin 会**持续拥有**这些文件（每次收敛都按终态重写，改动前会备份到
 `~/.local/state/ompinyin/backup-<时间>/`）：`~/.Xresources` 里 `ompinyin-managed` 那一块、
 `~/.config/fcitx5/conf/classicui.conf`（只拥有主题与字体 6 个键，其它键保留）、
-两个 `ompinyin-x11-hidpi.*` 用户单元、`~/.local/share/fcitx5/rime/*.custom.yaml`、
-`~/.config/fcitx5/config` 的 `[Hotkey/TriggerKeys]`。
+两个 `ompinyin-x11-hidpi.*` 用户单元、`~/.local/share/fcitx5/rime/*.custom.yaml`。
+
+4.0（4.5 之前）还拥有 `~/.config/fcitx5/config` 的 `[Hotkey/TriggerKeys]`；4.5+ 热键归 Omarchy，
+我们只**删除**自己历史写下的 `Control+space`/`Alt+space`，绝不写 `[Hotkey/AltTriggerKeys]`。
 
 要改行为请改**参数**（`ompinyin install …`），别改这些文件。另外：同一批文件**只能有一个所有者**——
 如果它们还被别的工具（配置同步、备份之类）纳管，那边一写就会把收敛结果退回去。
@@ -142,7 +176,8 @@ ompinyin 会**持续拥有**这些文件（每次收敛都按终态重写，改�
 
 ## 换主题后候选框还是旧配色
 
-候选框跟随 Omarchy 主题是默认终态，由一个 `theme-set` 钩子负责。重跑一次即可：
+4.5+ 由 Omarchy 自己的 `omarchy-theme-set-fcitx5` 负责（每次 `omarchy theme set` 都会跑）。
+如果没跟上，重跑一次收敛即可：
 
 ```bash
 ompinyin install -y
