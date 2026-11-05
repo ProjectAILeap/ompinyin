@@ -21,6 +21,8 @@ func convergedHost() *observe.Current {
 		PinnedHasFc:    true,
 		HotkeyOK:       true,
 		ProfileHasRime: true,
+		GroupIMs:       catalog.DefaultIMs(),
+		AltTriggerOK:   true,
 	}
 }
 
@@ -194,7 +196,7 @@ func TestDoctorAddsHostChecks(t *testing.T) {
 	for _, chk := range checks {
 		names[chk.Name] = true
 	}
-	for _, want := range []string{"服务", "环境变量红线", "触发键", "遗留目录", "build 产物"} {
+	for _, want := range []string{"服务", "环境变量红线", "触发键", "AltTriggerKeys", "遗留目录", "build 产物"} {
 		if !names[want] {
 			t.Errorf("doctor is missing the %q check", want)
 		}
@@ -429,4 +431,90 @@ func TestCheckFullShapeIndex(t *testing.T) {
 			t.Errorf("%s: OK=%v want %v (detail: %s)", c.name, got.OK, c.ok, got.Detail)
 		}
 	}
+}
+
+// TestGroupShapeIsTerminalState: fcitx5 gates every IM hotkey on
+// len(items) > 1, so a stale second IM is a real L5 failure — it is what turned
+// left Shift into a second Ctrl+Space on an upgraded host.
+func TestGroupShapeIsTerminalState(t *testing.T) {
+	d := catalog.DefaultDesired()
+
+	c := convergedHost()
+	if got := find(t, TerminalState(d, c), "输入法组"); !got.OK {
+		t.Errorf("matching group shape must pass: %+v", got)
+	}
+
+	stale := convergedHost()
+	stale.GroupIMs = []string{catalog.IMRime, catalog.IMEnglish, "pinyin-custom"}
+	got := find(t, TerminalState(d, stale), "输入法组")
+	if got.OK {
+		t.Fatalf("extra IM must fail L5: %+v", got)
+	}
+	for _, want := range []string{"pinyin-custom", "AltTrigger"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail must explain %q: %s", want, got.Detail)
+		}
+	}
+
+	// The single-IM terminal state is legitimate: it just means no IM hotkey can
+	// act (fcitx5 canTrigger() == false), which the detail must say.
+	single := convergedHost()
+	single.GroupIMs = []string{catalog.IMRime}
+	singleDesired := d
+	singleDesired.IMs = []string{catalog.IMRime}
+	one := find(t, TerminalState(singleDesired, single), "输入法组")
+	if !one.OK || !strings.Contains(one.Detail, "canTrigger") {
+		t.Errorf("single-IM shape must pass with the canTrigger caveat: %+v", one)
+	}
+}
+
+// TestAltTriggerCheck: fcitx5 ships AltTriggerKeys=Shift_L; with >1 IM it fires
+// the same toggle() as the trigger key. "Empty" is a present-but-childless
+// section — an absent one falls back to Shift_L again.
+func TestAltTriggerCheck(t *testing.T) {
+	d := catalog.DefaultDesired()
+	c := convergedHost()
+	if got := find(t, Doctor(d, c), "AltTriggerKeys"); !got.OK {
+		t.Errorf("empty section must pass: %+v", got)
+	}
+
+	bound := convergedHost()
+	bound.AltTriggerOK = false
+	bound.AltTriggerKeys = []string{"Shift_L"}
+	got := find(t, Doctor(d, bound), "AltTriggerKeys")
+	if got.OK {
+		t.Fatal("bound Shift_L must fail doctor")
+	}
+	if !strings.Contains(got.Detail, "Shift_L") || !strings.Contains(got.Detail, "Ctrl+Space") {
+		t.Errorf("detail must name the key and the symptom: %s", got.Detail)
+	}
+}
+
+// TestTriggerDetailIsHonestAboutSingleIM: with one IM fcitx5 cannot act on the
+// trigger key at all (canTrigger gates it), so doctor must not print
+// "开/停用输入法" — the old text claimed a switch that never happened.
+func TestTriggerDetailIsHonestAboutSingleIM(t *testing.T) {
+	d := catalog.DefaultDesired()
+	d.IMs = []string{catalog.IMRime}
+	c := convergedHost()
+	c.GroupIMs = []string{catalog.IMRime}
+	got := find(t, Doctor(d, c), "触发键")
+	if !got.OK {
+		t.Fatalf("configured trigger keys are still OK: %+v", got)
+	}
+	if !strings.Contains(got.Detail, "不生效") || !strings.Contains(got.Detail, "canTrigger") {
+		t.Errorf("single-IM detail must state the key is inert: %s", got.Detail)
+	}
+
+	two := convergedHost()
+	got2 := find(t, Doctor(d2WithTwoIMs(), two), "触发键")
+	if !strings.Contains(got2.Detail, "在 ") || !strings.Contains(got2.Detail, "间切换") {
+		t.Errorf("two-IM detail must describe the switch: %s", got2.Detail)
+	}
+}
+
+func d2WithTwoIMs() catalog.Desired {
+	d := catalog.DefaultDesired()
+	d.IMs = catalog.DefaultIMs()
+	return d
 }

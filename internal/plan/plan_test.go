@@ -56,7 +56,9 @@ func convergedCurrent() *observe.Current {
 		c.ContentEqual[rel] = true
 	}
 	c.ProfileHasRime = true
+	c.GroupIMs = catalog.DefaultIMs()
 	c.HotkeyOK = true
+	c.AltTriggerOK = true
 	c.DropInExists = true
 	c.DropInOK = true // present AND enabling notificationitem for the live unit
 	c.PinnedHasFc = true
@@ -314,5 +316,40 @@ func TestDiffForceL2Deploys(t *testing.T) {
 	}
 	if !forced.NeedDeploy {
 		t.Error("forceL2 must also deploy: re-extracted sources would never be compiled")
+	}
+}
+
+// TestDiffGroupShapeDriftIsHostWork: the group SHAPE is terminal state. fcitx5
+// gates every IM hotkey on len(items) > 1, so a stale second item (or the wrong
+// enumeration order) must open the L4 stop window instead of passing as
+// "rime is registered".
+func TestDiffGroupShapeDriftIsHostWork(t *testing.T) {
+	d := catalog.DefaultDesired()
+	c := convergedCurrent()
+	c.GroupIMs = []string{catalog.IMEnglish, catalog.IMRime} // same items, wrong order
+	p := Diff(d, c, false)
+	if !p.NeedHost {
+		t.Fatalf("group order drift must be host work:\n%s", p.Describe())
+	}
+	if out := p.Describe(); !strings.Contains(out, "输入法组 [keyboard-us rime] → [rime keyboard-us]") {
+		t.Errorf("plan must name the group drift:\n%s", out)
+	}
+}
+
+// TestDiffAltTriggerDriftIsHostWork: fcitx5 ships AltTriggerKeys=Shift_L. With
+// >1 IM it fires the same toggle() as the trigger key, so left Shift stops
+// switching 中英 inside rime. Convergence empties the section; drift = work.
+func TestDiffAltTriggerDriftIsHostWork(t *testing.T) {
+	d := catalog.DefaultDesired()
+	c := convergedCurrent()
+	c.AltTriggerOK = false
+	c.AltTriggerKeys = []string{"Shift_L"}
+	p := Diff(d, c, false)
+	if !p.NeedHost {
+		t.Fatalf("AltTriggerKeys drift must be host work:\n%s", p.Describe())
+	}
+	out := p.Describe()
+	if !strings.Contains(out, "清空 [Hotkey/AltTriggerKeys]") || !strings.Contains(out, "Shift_L") {
+		t.Errorf("plan must name the alt-trigger drift:\n%s", out)
 	}
 }

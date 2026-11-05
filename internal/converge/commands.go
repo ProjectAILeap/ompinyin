@@ -143,8 +143,8 @@ func Status(opts Options) int {
 		})
 	}
 	opts.outf("── ompinyin status：现状 vs 终态 ──")
-	opts.outf("desired: primary=%s extra=%v model=%v channel=%s schema_list=%v",
-		d.Primary, d.Extra, d.Model, d.Channel, d.SchemaList())
+	opts.outf("desired: primary=%s extra=%v model=%v channel=%s schema_list=%v ims=%v",
+		d.Primary, d.Extra, d.Model, d.Channel, d.SchemaList(), d.IMsOrDefault())
 	for _, name := range []string{"rime_ice", "wanxiang"} {
 		if rec, ok := st.Assets[name]; ok {
 			opts.outf("asset %s: tag=%s sha256=%s…", name, displayTag(rec.Tag), trunc(rec.SHA256, 12))
@@ -233,7 +233,10 @@ type HostReport struct {
 	RimeDataExists     bool     `json:"rimeDataExists"`
 	GramFileExists     bool     `json:"gramFileExists"`
 	ProfileHasRime     bool     `json:"profileHasRime"`
+	GroupIMs           []string `json:"groupIMs,omitempty"`
 	HotkeyOK           bool     `json:"hotkeyOK"`
+	AltTriggerKeys     []string `json:"altTriggerKeys,omitempty"`
+	AltTriggerOK       bool     `json:"altTriggerOK"`
 	DropInOK           bool     `json:"dropInOK"`
 	PinnedHasFcitx     bool     `json:"pinnedHasFcitx"`
 	StrayFcitx         bool     `json:"strayFcitx"`
@@ -285,6 +288,7 @@ func hostReportOf(c *observe.Current) HostReport {
 		RimeDir: c.RimeDir, Unit: c.Unit, ServiceActive: c.ServiceActive,
 		PackagesMissing: c.PackagesMissing, RimeDataExists: c.RimeDataExists,
 		GramFileExists: c.GramFileExists, ProfileHasRime: c.ProfileHasRime,
+		GroupIMs: c.GroupIMs, AltTriggerKeys: c.AltTriggerKeys, AltTriggerOK: c.AltTriggerOK,
 		HotkeyOK: c.HotkeyOK, DropInOK: c.DropInOK, PinnedHasFcitx: c.PinnedHasFc,
 		StrayFcitx:    c.StrayFcitx,
 		ShellRunning:  c.ShellRunning,

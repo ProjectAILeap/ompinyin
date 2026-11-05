@@ -13,6 +13,7 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/hotkey"
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
 	"github.com/ProjectAILeap/ompinyin/internal/pkgs"
+	"github.com/ProjectAILeap/ompinyin/internal/profile"
 	"github.com/ProjectAILeap/ompinyin/internal/service"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
 	"github.com/ProjectAILeap/ompinyin/internal/theme"
@@ -64,6 +65,16 @@ type Current struct {
 
 	ProfileHasRime bool
 	HotkeyOK       bool
+	// GroupIMs is the input-method group's item list (fcitx5's enumeration order
+	// for Ctrl+Space). Every IM hotkey is gated on len(GroupIMs) > 1, so the
+	// planner compares this against Desired.IMs instead of only asking whether
+	// rime is registered.
+	GroupIMs []string
+	// AltTriggerKeys is [Hotkey/AltTriggerKeys] (nil = absent = fcitx5's shipped
+	// Shift_L). AltTriggerOK means the section exists and is empty, which is what
+	// keeps left Shift out of fcitx5's toggle and inside rime.
+	AltTriggerKeys []string
+	AltTriggerOK   bool
 	// HerdrPrefix is herdr's own prefix chord ("" when herdr is not configured
 	// here); HerdrPrefixConflict names the chord both tools want. herdr grabs
 	// its prefix before the application sees it, so a shared chord would only
@@ -182,10 +193,15 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 
 	// L4
 	if b, err := os.ReadFile(ProfilePath()); err == nil {
-		c.ProfileHasRime = profileHasRime(string(b))
+		content := string(b)
+		c.ProfileHasRime = profileHasRime(content)
+		c.GroupIMs = profile.GroupIMs(content)
 	}
 	if b, err := os.ReadFile(ConfigPath()); err == nil {
-		c.HotkeyOK = hotkey.HasTrigger(string(b), hotkey.DefaultKeys)
+		content := string(b)
+		c.HotkeyOK = hotkey.HasTrigger(content, hotkey.DefaultKeys)
+		c.AltTriggerKeys = hotkey.AltTriggerKeys(content)
+		c.AltTriggerOK = hotkey.HasEmptyAltTrigger(content)
 	}
 	// Cross-tool check (§6.2): another program may already own the chord.
 	prefix, extras := HerdrPrefix(state.Home())

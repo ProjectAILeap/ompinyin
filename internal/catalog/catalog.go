@@ -44,6 +44,59 @@ type Desired struct {
 	// X11HiDPI is an explicit compatibility mode, never a default: Xft.dpi is
 	// global to XWayland and can double-scale unrelated X11 applications.
 	X11HiDPI bool `json:"x11HiDpi,omitempty"`
+
+	// IMs is the fcitx5 input-method GROUP's item list, in order. It belongs to
+	// the terminal state because fcitx5 gates EVERY input-method hotkey on
+	// canTrigger() == len(group items) > 1 (instance.cpp: trigger / activate /
+	// deactivate / altTrigger all start with `if (!canTrigger()) return false`):
+	//
+	//	["rime"]                → no hotkey can turn the IME on or off at all;
+	//	                          中英 lives inside rime (ascii_composer, Shift),
+	//	                          so writing Ctrl+Space would promise a switch
+	//	                          fcitx5 cannot deliver
+	//	["rime", "keyboard-us"] → Ctrl+Space really toggles to a plain XKB
+	//	                          English IM… and fcitx5's AltTriggerKeys (shipped
+	//	                          as Shift_L) becomes live too, stealing left Shift
+	//	                          from rime's commit_code until it is emptied
+	//
+	// rime is mandatory: it is the one IM ompinyin owns.
+	IMs []string `json:"ims,omitempty"`
+}
+
+// Input-method ids ompinyin knows about. keyboard-us is fcitx5's plain XKB
+// layout item — the "hard English" IM.
+const (
+	IMRime    = "rime"
+	IMEnglish = "keyboard-us"
+)
+
+// DefaultIMs is the shipped group shape: rime + a plain English IM. Two items
+// are what makes Ctrl+Space able to do anything (see Desired.IMs); the cost is
+// that fcitx5's AltTriggerKeys must be emptied, which convergence does
+// (hotkey.EnsureAltTriggerEmpty).
+func DefaultIMs() []string { return []string{IMRime, IMEnglish} }
+
+// IMsOrDefault returns the persisted group shape, or the shipped default for a
+// ledger written before the field existed.
+func (d Desired) IMsOrDefault() []string {
+	if len(d.IMs) == 0 {
+		return DefaultIMs()
+	}
+	return append([]string{}, d.IMs...)
+}
+
+// SameIMs reports whether two group shapes are identical. Order matters: it is
+// the enumeration order Ctrl+Space walks.
+func SameIMs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // IsZero reports whether the desired state was never persisted.
@@ -58,7 +111,7 @@ func DefaultDesired() Desired {
 	// short-form bug; with the correct `- schema: <id>` map form the stable
 	// release compiles fine (verified: rime_deployer --build emits
 	// rime_ice.table.bin).
-	return Desired{Primary: "quanpin", Extra: nil, Model: true, Channel: "stable"}
+	return Desired{Primary: "quanpin", Extra: nil, Model: true, Channel: "stable", IMs: DefaultIMs()}
 }
 
 // Validate enforces the §2.2 flag rules.
@@ -68,6 +121,27 @@ func (d Desired) Validate() error {
 	}
 	if d.Channel != "stable" && d.Channel != "nightly" {
 		return fmt.Errorf("channel must be stable|nightly, got %q", d.Channel)
+	}
+	// IMs: rime is mandatory (ompinyin only owns that IM) and a duplicate item
+	// would make fcitx5 enumerate the same IM twice.
+	if len(d.IMs) > 0 {
+		seenIM := map[string]bool{}
+		hasRime := false
+		for _, im := range d.IMs {
+			if strings.TrimSpace(im) == "" {
+				return fmt.Errorf("ims contains an empty input-method id")
+			}
+			if seenIM[im] {
+				return fmt.Errorf("duplicate input method %q", im)
+			}
+			seenIM[im] = true
+			if im == IMRime {
+				hasRime = true
+			}
+		}
+		if !hasRime {
+			return fmt.Errorf("ims must contain %q (ompinyin owns that IM)", IMRime)
+		}
 	}
 	seen := map[string]bool{}
 	for _, e := range d.Extra {

@@ -45,7 +45,8 @@ Desired
 ├── Primary    布局 ID              默认 quanpin（schema_list[0]）
 ├── Extra      []布局 ID            默认空；--dsp 时追加
 ├── Model      bool                 默认 true（万象 LMDG）
-└── Channel    stable | nightly     默认 stable（--channel 选项，见 §5.3）
+├── Channel    stable | nightly     默认 stable（--channel 选项，见 §5.3）
+└── IMs        []IM ID              默认 [rime keyboard-us]（--single-im / --english-im，见 §6.1）
 ```
 
 顶栏图标不是 Desired 的可选项，是 L4 不变量：每次收敛都必须达到 §6.4。
@@ -87,7 +88,7 @@ CLI 与状态清单使用短 ID；落到磁盘的是雾凇 schema 名。algebra 
 |---|---|---|---|
 | **中英**（引擎内） | rime 的 `ascii_mode` | **左右 Shift**（`commit_code`，受管手感项） | `fcitx5-remote` 仍是 `2`（不变激活态）；人工按 Shift 看候选框 |
 | **Rime schema** | `rime_ice` / `double_pinyin` / … | **`F4`** 呼出方案选单 | 人工按；读 `user.yaml` 的 `previously_selected_schema`。**禁止**用 `fcitx5-remote -s <schema>` |
-| **fcitx5 IM** | profile 里只有一个 `rime`（§6.1） | 触发键 **`Ctrl+Space`**；单 IM 时它是"开/停用输入法" | `fcitx5-remote` 三态 1↔2 |
+| **fcitx5 IM** | profile 里的 IM 组（默认 `[rime keyboard-us]`，§6.1） | 触发键 **`Ctrl+Space`** 在组内切到 `keyboard-us`；单 IM 组里它**不动作**（`canTrigger()` 要求 >1） | `fcitx5-remote` 三态 1↔2 |
 
 三条轴互不重叠：中英在引擎里（不受 fcitx5 激活态影响），方案在 rime 里（不影响其它应用），
 停用是 fcitx5 层（**停用时 rime 收不到键，方案与中英热键都不生效**，这是预期）。
@@ -107,7 +108,7 @@ CLI 与状态清单使用短 ID；落到磁盘的是雾凇 schema 名。algebra 
   读 `$HERDR_CONFIG_PATH` → `~/.config/herdr/config.toml`（缺省即 herdr 内置 `ctrl+b`，无冲突），
   `HerdrConflict` 与受管触发键按 `Ctrl`/`Control` 归一比较，命中结果进 `status`/`doctor` 的告警行、写触发键时也打一条
   `[警告]`。**只告警、不改别人的配置、也不偷偷换键**——换哪一边是用户的决定。
-- 单 IM 时触发键 = 开/停用；**停用后 rime 收不到键，Shift 与 F4 都不生效**（预期）。
+- 触发键的语义由**组内 IM 数**决定（§6.1）：默认两项 `[rime keyboard-us]` 时 `Ctrl+Space` 切到英文键盘，此时 rime 收不到键（Shift / F4 不生效）；**单 IM 组里它完全不动作**（fcitx5 `canTrigger()` 要求 >1），这不是故障。
 
 ---
 
@@ -295,7 +296,9 @@ L2 解压规则：
 > 注：`switches/@4/reset` 只在 `Model=true`（生成 `<schema>.custom.yaml`）时落地；`--no-model` 下没有 grammar 补丁、也就没有这个文件 —— 但 `save_options` 已经把 `full_shape` 排除在记忆之外，所以仍从半角起步。
 > 注：`,.` 翻页写在 `default.custom.yaml` 对自带 `key_binder` 的方案**不一定生效**；若某方案失效需在方案层 custom 补。
 
-推荐分工（三条轴，互不重叠）：中英 = 左右 `Shift`（引擎内，受管手感项）；方案 = `F4`；`Ctrl+Space` = 开/停用 fcitx5（profile 只有 `rime`，停用即走 XKB 布局输英文）。
+推荐分工（三条轴，互不重叠）：中英 = 左右 `Shift`（引擎内，受管手感项）；方案 = `F4`；`Ctrl+Space` = 在 IM 组内切到英文键盘。
+
+> **fcitx5 的硬约束（2026-11-03 以源码 + 真机确认）**：所有 IM 热键 —— `TriggerKeys`、`AltTriggerKeys`、`ActivateKeys`、`DeactivateKeys` —— 都先判 `canTrigger()`，而它是 `inputMethodList().size() > 1`。所以「组里只有 `rime`」时 `Ctrl+Space` 是**完全的 no-op**，不存在「单 IM 下开/停用」。默认组因此是两项 `[rime keyboard-us]`（`Ctrl+Space` 真的能切英文键盘）；`--single-im` 留给不需要英文键盘的人，此时中英只能靠 `Shift`。代价见 §6.2：两个 IM 会让出厂的 `AltTriggerKeys=Shift_L` 生效，必须清空。
 
 ---
 
@@ -316,13 +319,21 @@ restart **不触碰**主单元文件里的 ExecStart。失败不自动回滚，�
 
 ### 6.1 profile 注册（竞态 + 格式双坑）
 
-在 §6.0 的 stop 窗口里改 `~/.config/fcitx5/profile`。严格格式（`Name=rime`、`Layout=` 无空格、GroupOrder 末尾），宽容读取/严格写出；已有 rime 只确保 `DefaultIM=rime` 最小改动。
+在 §6.0 的 stop 窗口里改 `~/.config/fcitx5/profile`。严格格式（`Name=rime`、`Layout=` 无空格、GroupOrder 末尾），宽容读取/严格写出。
+
+**组的条目列表本身是终态**（`Desired.IMs`，`profile.ConvergeGroup`）：
+
+- 增删条目并**按给定顺序**重排（顺序 = `Ctrl+Space` 的枚举顺序），`packItems()` 保证 `Groups/0/Items/N` 从 0 连续、`GroupOrder` 居末、`DefaultIM=rime`（§16.18/32）。
+- **必须能删**：v1.3.0 及更早的 `DefaultProfile` 建过 `keyboard-us`，而 `EnsureRime` 只加不删 → 老机器永远带第二个 IM，与新装机器不一致（这正是 v1.3.1 注释里 "so no two hosts agreed" 的问题）。删/重排都有备份，`--single-im` 就是显式要求删到只剩 `rime`。
+- **默认两项的理由**：fcitx5 的 `canTrigger()` 要求条目数 > 1（见 §5.4 引文），单 IM 时 `Ctrl+Space` 完全不动作；两项才让「切英文键盘」这个承诺成立。
 
 ### 6.2 触发键避让
 
 Omarchy **原厂** herdr prefix 就是 Ctrl+Space，所以 **无条件** 写入触发键，不要「检测到 herdr 才写」（配置文件缺了反而漏改）。
 
-写 `~/.config/fcitx5/config` 的 `[Hotkey/TriggerKeys]`：受管键 `Ctrl+Space` 写入优先位，**用户自加的触发键保留在后面（合并、不吞并）**；被显式**移除**的是 `hotkey.PruneKeys` 里的 `Alt+space`（旧版本 ompinyin 写过、且是"窗口菜单"通用键），否则「换键」只在手工改过的机器上成立。键名按 `Ctrl`/`Control` 与大小写归一比较。单 IM（默认）时这个键就是"开/停用输入法"。**INI 合并不整文件覆盖**（保留用户其它热键段）。键名白名单校验——裸 `Shift` 会被 fcitx5 **静默丢弃**。已含全部受管键则跳过。
+写 `~/.config/fcitx5/config` 的 `[Hotkey/TriggerKeys]`：受管键 `Ctrl+Space` 写入优先位，**用户自加的触发键保留在后面（合并、不吞并）**；被显式**移除**的是 `hotkey.PruneKeys` 里的 `Alt+space`（旧版本 ompinyin 写过、且是"窗口菜单"通用键），否则「换键」只在手工改过的机器上成立。键名按 `Ctrl`/`Control` 与大小写归一比较。**但 fcitx5 的 `canTrigger()` 要求组内 IM 数 > 1**：单 IM 组里这个键完全不动作（`trigger()`/`activate()`/`deactivate()` 都以 `if (!canTrigger()) return false` 开头），所以「单 IM 下 `Ctrl+Space` = 开/停用」是错的——那是 v1.3.1 之前的说法，2026-11-03 由源码 + 真机证伪（见 `dev-notes.md` P9）；默认组两项才让这个键真正可用。**INI 合并不整文件覆盖**（保留用户其它热键段）。键名白名单校验——裸 `Shift` 会被 fcitx5 **静默丢弃**。已含全部受管键则跳过。
+
+**同时清空 `[Hotkey/AltTriggerKeys]`**（`hotkey.EnsureAltTriggerEmpty`）：fcitx5 出厂把 `Shift_L` 放在这里（`globalconfig.cpp`，描述 "Temporarily Toggle Input Method"）。组内 IM > 1 时它与触发键**走同一个 `toggle()`**（`Instance::altTrigger` → `toggle`），于是左 Shift 与 `Ctrl+Space` 变成同一件事，rime 受管手感项 `ascii_composer/switch_key/Shift_L: commit_code` 永远收不到那个键。fcitx5 的 INI **写不出空列表值**：唯一的「无键」编码是 section 存在但没有 `N=` 子项（缺段 = 回落默认 `Shift_L`）；实测 fcitx5 5.1.23 重启不抹、`install` 收敛幂等。
 
 ### 6.3 服务操作
 
@@ -537,7 +548,7 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 |---|---|
 | IM / 输入法层 | fcitx5 的输入法实例（`keyboard-us` ↔ `rime`），用触发键切中英 |
 | schema / 方案层 | Rime 输入方案（`rime_ice` / `double_pinyin` / …），用 **F4** 切换 |
-| `Desired` | 声明式期望终态（Primary / Extra / Model / Channel） |
+| `Desired` | 声明式期望终态（Primary / Extra / Model / Channel / IMs） |
 | 收敛 | 采集现状 → diff 终态 → 只执行差异 → 复核 |
 | LMDG | Language Model Data Group；万象整句模型（`.gram`） |
 | SNI | StatusNotifierItem：fcitx5 顶栏托盘项的通信协议 |
@@ -598,3 +609,5 @@ ompinyin status|doctor --json              # 机器可读输出（脚本 / CI �
 29. 启动服务前先清掉占着 `org.fcitx.Fcitx5` 的游离实例，且**仅当单元未激活时**清（`Start` 是幂等关窗调用，不得误杀健康实例）；清完必须确认它已让出总线名再 start。存活性探测只走进程探针（`pgrep`），**绝不用 `fcitx5-remote`/总线调用**——服务停止时那会 D-Bus 激活一个新的游离实例，正是本故障的成因。
 30. L5 的「服务在跑」判定不得只看 `systemctl --user is-active` 的快照：`Restart=always` 下濒死实例会让它读到几百毫秒的 `active`。单元自称激活却存在**多于一个** fcitx5 进程（`FcitxCount > 1`）即与游离实例抖动共存，L5 必须失败——`install` 绝不能报「终态收敛完成」而 `doctor` 立刻报两项不达标。
 31. 自升级替换文件必须**落进目标目录再 rename**（copy → 同目录 rename），**绝不**从暂存目录直接 `rename(2)` 到二进制：暂存用 `$TMPDIR`（Omarchy 上是 tmpfs），二进制在 `$HOME`/`/usr/local/bin`（btrfs/root fs），跨挂载 rename 返回 `EXDEV`。替换后必须仍是 `0755`（`CopyFile` 写 0644），失败不得在二进制旁留 `.*.new`。
+32. fcitx5 输入法组是终态（`Desired.IMs`）：收敛必须增删 + 按声明顺序重排条目（`profile.ConvergeGroup`），并保持 `DefaultIM=rime`、`GroupOrder` 居末、条目 `0..n-1` 连续。理由：所有 IM 热键都以 `canTrigger()`（条目数 > 1）为前提，条目集合一改，`Ctrl+Space` 与左 Shift 的语义就变。
+33. `[Hotkey/AltTriggerKeys]` 必须是**存在且为空**的段：fcitx5 出厂 `Shift_L` 会与 rime 的 `Shift_L: commit_code` 抢同一个键（>1 IM 时走同一个 `toggle()`）；空列表只能编码成「空 section」，缺段等于回落到默认值。

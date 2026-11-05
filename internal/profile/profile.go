@@ -194,6 +194,161 @@ func EnsureRime(content string) (string, bool, error) {
 	return Render(sections), true, nil
 }
 
+// GroupIMs returns the group's input-method names in item order. It is what
+// fcitx5 enumerates with Ctrl+Space and what `canTrigger()` counts: EVERY
+// input-method hotkey (TriggerKeys / AltTriggerKeys / Activate / Deactivate) is
+// gated on len(GroupIMs) > 1, so the group shape is part of the terminal state,
+// not a user preference (design §6.1).
+func GroupIMs(content string) []string {
+	type item struct {
+		idx  int
+		name string
+	}
+	var items []item
+	for _, s := range Parse(content) {
+		if !strings.HasPrefix(s.Name, itemPrefix) {
+			continue
+		}
+		name, _ := s.Get("Name")
+		if name == "" {
+			continue
+		}
+		items = append(items, item{idx: itemIndex(s), name: name})
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].idx < items[j].idx })
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.name
+	}
+	return out
+}
+
+// ConvergeGroup reconciles the group's item list to ims EXACTLY: missing items
+// are appended, unlisted items are removed, surviving items keep their other
+// keys (Layout=…) and the whole set is renumbered contiguously in the ORDER
+// GIVEN (that order is what Ctrl+Space walks).
+//
+// Why removal lives here: EnsureRime only ever appends. Combined with the old
+// default profile that also created keyboard-us, an existing host could carry a
+// second IM forever — two hosts then disagreed (design §6.1), and with two items
+// fcitx5's AltTriggerKeys (shipped Shift_L) starts stealing left Shift from
+// rime's commit_code, making it behave exactly like Ctrl+Space.
+func ConvergeGroup(content string, ims []string) (string, bool, error) {
+	if len(ims) == 0 {
+		return "", false, fmt.Errorf("profile: ims must not be empty")
+	}
+	seen := map[string]bool{}
+	hasRime := false
+	for _, im := range ims {
+		if strings.TrimSpace(im) == "" {
+			return "", false, fmt.Errorf("profile: ims contains an empty input-method id")
+		}
+		if seen[im] {
+			return "", false, fmt.Errorf("profile: duplicate input method %q", im)
+		}
+		seen[im] = true
+		if im == "rime" {
+			hasRime = true
+		}
+	}
+	if !hasRime {
+		return "", false, fmt.Errorf("profile: ims must contain rime")
+	}
+
+	if strings.TrimSpace(content) == "" {
+		content = DefaultProfile()
+	}
+	sections := Parse(content)
+	g0 := findSection(sections, "Groups/0")
+	if g0 == nil {
+		return "", false, fmt.Errorf("profile has no [Groups/0] section; cannot converge the group safely")
+	}
+
+	// Existing items by name (first occurrence wins) and the item slot count.
+	byName := map[string]*Section{}
+	itemCount := 0
+	for _, s := range sections {
+		if !strings.HasPrefix(s.Name, itemPrefix) {
+			continue
+		}
+		itemCount++
+		if name, _ := s.Get("Name"); name != "" {
+			if _, dup := byName[name]; !dup {
+				byName[name] = s
+			}
+		}
+	}
+
+	// Desired item sections, in the requested order; unknown ids start with the
+	// canonical (Name=, Layout=) pair.
+	desired := make([]*Section, 0, len(ims))
+	reused := map[*Section]bool{}
+	for _, im := range ims {
+		if s, ok := byName[im]; ok && !reused[s] {
+			reused[s] = true
+			desired = append(desired, s)
+			continue
+		}
+		desired = append(desired, &Section{Name: itemPrefix + "0", Keys: [][2]string{{"Name", im}, {"Layout", ""}}})
+	}
+
+	defaultIM, _ := g0.Get("DefaultIM")
+	hasGroupOrder := findSection(sections, "GroupOrder") != nil
+	changed := !sameNames(GroupIMs(content), ims) || itemCount != len(ims) ||
+		defaultIM != "rime" || !hasGroupOrder
+
+	if !changed {
+		return content, false, nil
+	}
+
+	// Rebuild: non-item sections in order, items spliced in right after
+	// [Groups/0] (DefaultProfile's canonical shape), GroupOrder last on render.
+	kept := make([]*Section, 0, len(sections)+len(desired))
+	g0Slot := -1
+	for _, s := range sections {
+		if strings.HasPrefix(s.Name, itemPrefix) {
+			continue
+		}
+		if s == g0 {
+			g0Slot = len(kept)
+		}
+		kept = append(kept, s)
+	}
+	merged := make([]*Section, 0, len(kept)+len(desired))
+	merged = append(merged, kept[:g0Slot+1]...)
+	merged = append(merged, desired...)
+	merged = append(merged, kept[g0Slot+1:]...)
+
+	// Number the items in the REQUESTED order before packing: packItems sorts by
+	// the existing numeric suffix, so a reused section (keyboard-us kept its
+	// Items/0 name) would otherwise be pulled back to its old position and the
+	// requested enumeration order would be silently lost.
+	for i, s := range desired {
+		s.Name = itemPrefix + strconv.Itoa(i)
+	}
+	packItems(merged)
+
+	g0 = findSection(merged, "Groups/0")
+	g0.Set("DefaultIM", "rime")
+	if findSection(merged, "GroupOrder") == nil {
+		merged = append(merged, &Section{Name: "GroupOrder", Keys: [][2]string{{"0", "Groups/0"}}})
+	}
+	return Render(merged), true, nil
+}
+
+// sameNames compares two IM name lists (order-sensitive).
+func sameNames(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // itemPrefix is the section prefix of a group's IM items.
 const itemPrefix = "Groups/0/Items/"
 

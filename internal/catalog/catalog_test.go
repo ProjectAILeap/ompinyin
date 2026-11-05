@@ -250,3 +250,57 @@ func TestCandidatesOrdering(t *testing.T) {
 		t.Errorf("upstream = %v", got)
 	}
 }
+
+func TestDefaultIMsIsTwoItemsAndContainsRime(t *testing.T) {
+	ims := DefaultIMs()
+	if len(ims) != 2 || ims[0] != IMRime || ims[1] != IMEnglish {
+		t.Fatalf("DefaultIMs() = %v; want [rime keyboard-us] (two items are what makes Ctrl+Space able to act at all)", ims)
+	}
+	if got := (Desired{}).IMsOrDefault(); len(got) != len(ims) {
+		t.Errorf("zero Desired must fall back to DefaultIMs, got %v", got)
+	}
+	one := Desired{IMs: []string{IMRime}}
+	if got := one.IMsOrDefault(); len(got) != 1 || got[0] != IMRime {
+		t.Errorf("explicit single-IM shape mangled: %v", got)
+	}
+}
+
+func TestValidateIMs(t *testing.T) {
+	base := func() Desired {
+		d := DefaultDesired()
+		return d
+	}
+	if err := base().Validate(); err != nil {
+		t.Fatalf("default desired must validate: %v", err)
+	}
+	single := base()
+	single.IMs = []string{IMRime}
+	if err := single.Validate(); err != nil {
+		t.Errorf("single-IM shape must validate: %v", err)
+	}
+	for name, ims := range map[string][]string{
+		"missing rime": {IMEnglish},
+		"duplicate":    {IMRime, IMRime},
+		"empty id":     {IMRime, ""},
+	} {
+		d := base()
+		d.IMs = ims
+		if err := d.Validate(); err == nil {
+			t.Errorf("%s: expected validation error for %v", name, ims)
+		}
+	}
+}
+
+func TestSameIMs(t *testing.T) {
+	a := DefaultIMs()
+	b := DefaultIMs()
+	if !SameIMs(a, b) {
+		t.Error("identical shapes must compare equal")
+	}
+	if SameIMs(a, []string{IMEnglish, IMRime}) {
+		t.Error("order must matter (it is Ctrl+Space's enumeration order)")
+	}
+	if SameIMs(a, []string{IMRime}) {
+		t.Error("length must matter")
+	}
+}

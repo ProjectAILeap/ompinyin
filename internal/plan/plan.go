@@ -155,7 +155,13 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	// source/build timestamp inversion that reads exactly like the stale-build
 	// trap (docs/dev-notes.md P4), so `update` always deploys.
 	p.NeedDeploy = len(c.BuildMissing) > 0 || p.NeedL3 || forceL2
-	p.NeedHost = !c.ProfileHasRime || !c.HotkeyOK || !c.DropInOK
+	// The group SHAPE (not just "is rime registered") is part of L4: fcitx5
+	// gates every IM hotkey on len(GroupIMs) > 1, so a stale second IM changes
+	// what Ctrl+Space and left Shift both do. AltTriggerOK is its partner: with
+	// >1 IM the shipped AltTriggerKeys=Shift_L turns left Shift into the same
+	// toggle as the trigger key, so convergence empties it.
+	groupDrift := !catalog.SameIMs(c.GroupIMs, d.IMsOrDefault())
+	p.NeedHost = !c.ProfileHasRime || !c.HotkeyOK || !c.DropInOK || groupDrift || !c.AltTriggerOK
 	// "fcitx5 is running" is part of the L4 terminal state (verify checks it,
 	// §6.4 needs the SNI item live). Without this predicate a host whose unit
 	// was stopped by hand could never be repaired: no other layer had work, so
@@ -179,7 +185,7 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	p.NeedHidpiUndo = !d.X11HiDPI && (c.X11ManagedPresent || c.X11UnitsPresent)
 	switch {
 	case p.NeedDeploy || p.NeedHost:
-		p.Add("L4", fmt.Sprintf("stop %s → rime_deployer --build → profile/hotkey/drop-in → start", unitName(c)), true)
+		p.Add("L4", fmt.Sprintf("stop %s → rime_deployer --build → profile/hotkey/drop-in → start%s", unitName(c), hostDriftNote(d, c)), true)
 	case p.NeedService:
 		state := "服务未运行"
 		if c.ServiceActive {
@@ -223,6 +229,31 @@ func Diff(d catalog.Desired, c *observe.Current, forceL2 bool) *Plan {
 	// L5 verify (read-only)
 	p.Add("L5", "复核：build 产物 / grammar 编入 / IM 三态 / 托盘可见 / 候选框主题", true)
 	return p
+}
+
+// hostDriftNote names the host halves that are off target — the L4 title is the
+// only place a human sees WHY the stop window opened (a converged re-run shows
+// none of them). Empty when profile/hotkey/drop-in are all on target.
+func hostDriftNote(d catalog.Desired, c *observe.Current) string {
+	var parts []string
+	if want := d.IMsOrDefault(); !catalog.SameIMs(c.GroupIMs, want) {
+		have := "无"
+		if len(c.GroupIMs) > 0 {
+			have = strings.Join(c.GroupIMs, " ")
+		}
+		parts = append(parts, fmt.Sprintf("输入法组 [%s] → [%s]", have, strings.Join(want, " ")))
+	}
+	if !c.AltTriggerOK {
+		bound := "缺段（fcitx5 会回落 Shift_L）"
+		if len(c.AltTriggerKeys) > 0 {
+			bound = strings.Join(c.AltTriggerKeys, " ")
+		}
+		parts = append(parts, fmt.Sprintf("清空 [Hotkey/AltTriggerKeys]（现为 %s；组内 >1 个 IM 时它会把左 Shift 变成「切输入法」，与 Ctrl+Space 同效）", bound))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "；" + strings.Join(parts, "；")
 }
 
 // x11OptionalNote renders the read-only X11 HiDPI diagnosis shown when the

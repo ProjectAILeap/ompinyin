@@ -235,6 +235,64 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// AltTriggerSection holds fcitx5's "temporarily toggle input method" keys
+// (globalconfig.cpp: altTriggerKeys, shipped as {Shift_L}).
+const AltTriggerSection = "Hotkey/AltTriggerKeys"
+
+// EnsureAltTriggerEmpty empties [Hotkey/AltTriggerKeys] so LEFT Shift reaches
+// rime's ascii_composer instead of fcitx5's own toggle.
+//
+// Why this is part of the terminal state: fcitx5 gates the alt trigger on
+// `canTrigger()` — group item count > 1 — which is exactly the shipped
+// two-IM shape (rime + keyboard-us, needed so Ctrl+Space can do anything at
+// all). With two items, the shipped `Shift_L` becomes live and does the SAME
+// `toggle()` as the trigger key, so "左 Shift 在 rime 内切中英" silently turns
+// into "左 Shift 和 Ctrl+Space 一样" (真机 2026-11-03 复现).
+//
+// fcitx5's INI cannot express an empty list value: the only encoding of "no
+// keys" is a section that EXISTS with no `N=` children — an absent section means
+// "use the default", i.e. Shift_L again. Verified on fcitx5 5.1.23: fcitx5
+// neither rewrites nor drops such a section on restart, and a converging
+// `install` keeps it (this function is idempotent).
+func EnsureAltTriggerEmpty(content string) (string, bool, error) {
+	secs := parseINI(content)
+	for i := range secs {
+		if secs[i].Name != AltTriggerSection {
+			continue
+		}
+		if len(compact(secs[i].Lines)) == 0 {
+			return content, false, nil
+		}
+		// Dropping the keys IS the convergence: the section stays, empty.
+		secs[i].Lines = nil
+		return renderINI(secs), true, nil
+	}
+	secs = append(secs, section{Name: AltTriggerSection})
+	return renderINI(secs), true, nil
+}
+
+// AltTriggerKeys returns the keys bound in [Hotkey/AltTriggerKeys] (nil when
+// the section is absent — which for fcitx5 means the shipped Shift_L).
+func AltTriggerKeys(content string) []string {
+	for _, s := range parseINI(content) {
+		if s.Name == AltTriggerSection {
+			return sectionKeyValues(s.Lines)
+		}
+	}
+	return nil
+}
+
+// HasEmptyAltTrigger reports whether the section exists and carries no keys.
+// An ABSENT section is not "empty": fcitx5 would fall back to Shift_L.
+func HasEmptyAltTrigger(content string) bool {
+	for _, s := range parseINI(content) {
+		if s.Name == AltTriggerSection {
+			return len(sectionKeyValues(s.Lines)) == 0
+		}
+	}
+	return false
+}
+
 // HasTrigger reports whether the trigger section already contains every
 // managed key. Extra user keys are allowed — the plan predicate must not
 // flap when the user adds their own trigger key (P2-5).

@@ -298,3 +298,99 @@ func itemNames(content string) []string {
 	}
 	return names
 }
+
+// GroupIMs reports the group's items in ITEM ORDER (what Ctrl+Space walks).
+func TestGroupIMsOrder(t *testing.T) {
+	if got := GroupIMs(fullProfile); len(got) != 2 || got[0] != "keyboard-us" || got[1] != "rime" {
+		t.Fatalf("GroupIMs = %v; want [keyboard-us rime]", got)
+	}
+	if got := GroupIMs(""); len(got) != 0 {
+		t.Errorf("empty profile must report no items, got %v", got)
+	}
+}
+
+// ConvergeGroup reorders to the requested shape, keeps DefaultIM=rime, and is
+// idempotent — the "legacy host carried keyboard-us forever" repair.
+func TestConvergeGroupReorders(t *testing.T) {
+	out, changed, err := ConvergeGroup(fullProfile, []string{"rime", "keyboard-us"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("reorder must report changed")
+	}
+	if got := GroupIMs(out); len(got) != 2 || got[0] != "rime" || got[1] != "keyboard-us" {
+		t.Fatalf("GroupIMs after converge = %v; want [rime keyboard-us]", got)
+	}
+	if !strings.Contains(out, "DefaultIM=rime") {
+		t.Errorf("DefaultIM must stay rime:\n%s", out)
+	}
+	// GroupOrder stays last (§16.18) and item indices are packed from 0.
+	if !strings.HasSuffix(strings.TrimRight(out, "\n"), "0=Groups/0") {
+		t.Errorf("GroupOrder must be last:\n%s", out)
+	}
+	if strings.Contains(out, "[Groups/0/Items/2]") {
+		t.Errorf("item indices must be packed:\n%s", out)
+	}
+	out2, changed2, err := ConvergeGroup(out, []string{"rime", "keyboard-us"})
+	if err != nil || changed2 || out2 != out {
+		t.Errorf("second converge must be a no-op (changed=%v err=%v):\n%s", changed2, err, out2)
+	}
+}
+
+// ConvergeGroup removes a stale second IM (EnsureRime alone only appends, which
+// is how old hosts kept keyboard-us forever).
+func TestConvergeGroupRemovesStaleIM(t *testing.T) {
+	out, changed, err := ConvergeGroup(fullProfile, []string{"rime"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("removal must report changed")
+	}
+	if got := GroupIMs(out); len(got) != 1 || got[0] != "rime" {
+		t.Fatalf("GroupIMs after converge = %v; want [rime]", got)
+	}
+	if strings.Contains(out, "keyboard-us") {
+		t.Errorf("stale item left behind:\n%s", out)
+	}
+}
+
+// Unknown ids are appended with the canonical (Name=, Layout=) pair, and an
+// empty profile starts from DefaultProfile.
+func TestConvergeGroupAppendsAndBootstraps(t *testing.T) {
+	out, changed, err := ConvergeGroup("", []string{"rime", "keyboard-us"})
+	if err != nil || !changed {
+		t.Fatalf("bootstrap err=%v changed=%v", err, changed)
+	}
+	if got := GroupIMs(out); len(got) != 2 || got[0] != "rime" {
+		t.Fatalf("GroupIMs = %v; want [rime keyboard-us]", got)
+	}
+	other, _, err := ConvergeGroup(fullProfile, []string{"rime", "pinyin-custom"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := GroupIMs(other); len(got) != 2 || got[1] != "pinyin-custom" {
+		t.Fatalf("new item not appended: %v", got)
+	}
+	if !strings.Contains(other, "[Groups/0/Items/1]\nName=pinyin-custom\nLayout=") {
+		t.Errorf("new item must carry the canonical Layout= line:\n%s", other)
+	}
+}
+
+func TestConvergeGroupRejectsBadShapes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		content string
+		ims     []string
+	}{
+		"empty ims":    {fullProfile, nil},
+		"missing rime": {fullProfile, []string{"keyboard-us"}},
+		"duplicate":    {fullProfile, []string{"rime", "rime"}},
+		"empty id":     {fullProfile, []string{"rime", ""}},
+		"no Groups/0":  {"[GroupOrder]\n0=Groups/0\n", []string{"rime"}},
+	} {
+		if _, _, err := ConvergeGroup(tc.content, tc.ims); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
+}

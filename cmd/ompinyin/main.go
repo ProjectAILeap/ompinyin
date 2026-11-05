@@ -195,6 +195,8 @@ func cmdInstall(argv []string) int {
 		channel    = fs.String("channel", "stable", "asset channel: stable|nightly")
 		x11HiDPI   = fs.Bool("x11-hidpi", false, "opt in to global XWayland Xft.dpi compatibility mode")
 		noX11HiDPI = fs.Bool("no-x11-hidpi", false, "disable the global XWayland Xft.dpi compatibility mode")
+		singleIM   = fs.Bool("single-im", false, "keep only rime in the fcitx5 group (no IM hotkey can switch or stop the IME then; 中英 via rime's Shift)")
+		englishIM  = fs.String("english-im", "", "id of the second (English) input method, or \"none\" for the single-IM shape (default "+catalog.IMEnglish+")")
 		yes        = fs.Bool("yes", false, "assume yes, non-interactive")
 		yesS       = fs.Bool("y", false, "shorthand for --yes")
 		dryRun     = fs.Bool("dry-run", false, "print the plan without applying changes")
@@ -239,6 +241,10 @@ func cmdInstall(argv []string) int {
 		fmt.Fprintln(os.Stderr, "--x11-hidpi 与 --no-x11-hidpi 互斥")
 		return converge.ExitUsage
 	}
+	if *singleIM && *englishIM != "" {
+		fmt.Fprintln(os.Stderr, "--single-im 与 --english-im 互斥（后者已能表达单 IM：--english-im none）")
+		return converge.ExitUsage
+	}
 	if jsonWithoutDryRun(*jsonOut, *dryRun) {
 		return converge.ExitUsage
 	}
@@ -259,6 +265,7 @@ func cmdInstall(argv []string) int {
 		DSPDefault: *dspDefault, NoQuanpin: *noQuanpin,
 		NoModel: *noModel || *noModelS, Model: *model,
 		X11HiDPI: *x11HiDPI, NoX11HiDPI: *noX11HiDPI,
+		SingleIM: *singleIM, EnglishIM: *englishIM,
 	}, touched)
 
 	opts := newOpts()
@@ -277,8 +284,8 @@ func cmdInstall(argv []string) int {
 		if opts.JSON {
 			dst = os.Stderr
 		}
-		fmt.Fprintf(dst, "[基线] 终态继承自 state.json：primary=%s extra=%v model=%v channel=%s（未指定的选项不重置）\n",
-			st.Desired.Primary, st.Desired.Extra, st.Desired.Model, st.Desired.Channel)
+		fmt.Fprintf(dst, "[基线] 终态继承自 state.json：primary=%s extra=%v model=%v channel=%s ims=%v（未指定的选项不重置）\n",
+			st.Desired.Primary, st.Desired.Extra, st.Desired.Model, st.Desired.Channel, st.Desired.IMsOrDefault())
 	}
 
 	return converge.Install(d, false, opts)
@@ -372,6 +379,8 @@ type installFlags struct {
 	Model      bool
 	X11HiDPI   bool
 	NoX11HiDPI bool
+	SingleIM   bool
+	EnglishIM  string
 }
 
 // applyInstallFlags overlays the EXPLICITLY GIVEN flags on the persisted
@@ -399,6 +408,18 @@ func applyInstallFlags(base catalog.Desired, f installFlags, touched map[string]
 	if touched["dsp"] {
 		// same pairing rules as `switch --dsp` (catalog.PairPrimary)
 		d.Primary, d.Extra = catalog.PairPrimary(f.DSP, f.DSPDefault, f.NoQuanpin)
+	}
+	// The group shape is a terminal-state field like the rest: only an explicit
+	// flag moves it. --single-im == --english-im none.
+	switch {
+	case touched["single-im"]:
+		d.IMs = []string{catalog.IMRime}
+	case touched["english-im"]:
+		if f.EnglishIM == "" || f.EnglishIM == "none" {
+			d.IMs = []string{catalog.IMRime}
+		} else {
+			d.IMs = []string{catalog.IMRime, f.EnglishIM}
+		}
 	}
 	return d
 }

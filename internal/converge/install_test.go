@@ -18,8 +18,10 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/deploy"
 	"github.com/ProjectAILeap/ompinyin/internal/facts"
 	"github.com/ProjectAILeap/ompinyin/internal/hidpi"
+	"github.com/ProjectAILeap/ompinyin/internal/hotkey"
 	"github.com/ProjectAILeap/ompinyin/internal/observe"
 	"github.com/ProjectAILeap/ompinyin/internal/pkgs"
+	"github.com/ProjectAILeap/ompinyin/internal/profile"
 	"github.com/ProjectAILeap/ompinyin/internal/selfup"
 	"github.com/ProjectAILeap/ompinyin/internal/service"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
@@ -363,15 +365,26 @@ func TestInstallConvergesDefaultTerminalState(t *testing.T) {
 		t.Error("double pinyin grammar must not exist without --dsp")
 	}
 
-	// L4 profile registered rime
+	// L4 profile registered rime AND carries the declared group shape: two items
+	// are what lets Ctrl+Space act at all (fcitx5 gates IM hotkeys on >1 IM).
 	pb, _ := os.ReadFile(observe.ProfilePath())
 	if !strings.Contains(string(pb), "DefaultIM=rime") || !strings.Contains(string(pb), "Name=rime") {
 		t.Errorf("profile not converged:\n%s", pb)
 	}
-	// L4 hotkeys with whitelist keysyms
+	if got := profile.GroupIMs(string(pb)); !catalog.SameIMs(got, catalog.DefaultIMs()) {
+		t.Errorf("group shape = %v; want %v\n%s", got, catalog.DefaultIMs(), pb)
+	}
+	// L4 hotkeys with whitelist keysyms, and the alt-trigger section emptied so
+	// left Shift stays inside rime (fcitx5 ships Shift_L there).
 	cb, _ := os.ReadFile(observe.ConfigPath())
 	if !strings.Contains(string(cb), "0=Control+space") || strings.Contains(string(cb), "1=Control+Shift_L") {
 		t.Errorf("hotkey config wrong:\n%s", cb)
+	}
+	if keys := hotkey.AltTriggerKeys(string(cb)); len(keys) != 0 {
+		t.Errorf("AltTriggerKeys must be emptied, got %v\n%s", keys, cb)
+	}
+	if !hotkey.HasEmptyAltTrigger(string(cb)) {
+		t.Errorf("empty [Hotkey/AltTriggerKeys] section missing (absent section means fcitx5 falls back to Shift_L):\n%s", cb)
 	}
 	// L4 drop-in removes --disable notificationitem (dedicated filename)
 	db, _ := os.ReadFile(tray.DropInPath(home, "omarchy-fcitx5.service"))
@@ -1725,5 +1738,66 @@ func TestApplyX11HiDPIResolvesSessionEnvFromManager(t *testing.T) {
 	}
 	if !strings.Contains(out2.String(), "补全会话环境") {
 		t.Errorf("the import must be reported, not silent:\n%s", out2.String())
+	}
+}
+
+// TestInstallConvergesLegacyGroupAndAltTrigger: a host from the old default
+// (two IMs in the opposite order, fcitx5's shipped AltTriggerKeys=Shift_L) must
+// converge to the declared group shape + an EMPTY AltTriggerKeys section.
+// Otherwise left Shift fires the same toggle() as Ctrl+Space instead of
+// switching 中英 inside rime (真机 2026-11-03 的症状).
+func TestInstallConvergesLegacyGroupAndAltTrigger(t *testing.T) {
+	home := t.TempDir()
+	setupFakeHost(t, home)
+	seedCache(t, home)
+
+	// legacy profile: keyboard-us first, rime second (what EnsureRime produced).
+	if err := os.MkdirAll(filepath.Dir(observe.ProfilePath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyProfile := "[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=rime\n\n" +
+		"[Groups/0/Items/0]\nName=keyboard-us\nLayout=\n\n" +
+		"[Groups/0/Items/1]\nName=rime\nLayout=\n\n[GroupOrder]\n0=Groups/0\n"
+	if err := os.WriteFile(observe.ProfilePath(), []byte(legacyProfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(observe.ConfigPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyConfig := "[Hotkey]\nModifierOnlyKeyTimeout=-1\n\n[Hotkey/TriggerKeys]\n0=Control+space\n\n" +
+		"[Hotkey/AltTriggerKeys]\n0=Shift_L\n"
+	if err := os.WriteFile(observe.ConfigPath(), []byte(legacyConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, out := newTestOpts()
+	if code := Install(catalog.DefaultDesired(), false, opts); code != ExitOK {
+		t.Fatalf("install exit=%d\noutput:\n%s", code, out.String())
+	}
+	pb, _ := os.ReadFile(observe.ProfilePath())
+	if got := profile.GroupIMs(string(pb)); !catalog.SameIMs(got, catalog.DefaultIMs()) {
+		t.Errorf("group shape = %v; want %v\n%s", got, catalog.DefaultIMs(), pb)
+	}
+	cb, _ := os.ReadFile(observe.ConfigPath())
+	if keys := hotkey.AltTriggerKeys(string(cb)); len(keys) != 0 {
+		t.Errorf("AltTriggerKeys = %v; want empty\n%s", keys, cb)
+	}
+	if !hotkey.HasEmptyAltTrigger(string(cb)) {
+		t.Errorf("empty AltTriggerKeys section missing:\n%s", cb)
+	}
+	if !strings.Contains(string(cb), "0=Control+space") {
+		t.Errorf("trigger keys lost:\n%s", cb)
+	}
+
+	// A second run is a no-op: no drift, no new backup (§16.13).
+	matches, _ := filepath.Glob(filepath.Join(home, ".local", "state", "ompinyin", "backup-*"))
+	before := len(matches)
+	opts2, out2 := newTestOpts()
+	if code := Install(catalog.DefaultDesired(), false, opts2); code != ExitOK {
+		t.Fatalf("re-run exit=%d\noutput:\n%s", code, out2.String())
+	}
+	matches, _ = filepath.Glob(filepath.Join(home, ".local", "state", "ompinyin", "backup-*"))
+	if len(matches) != before {
+		t.Errorf("converged re-run created a backup directory (before=%d after=%d)", before, len(matches))
 	}
 }
