@@ -44,9 +44,16 @@ release:
     在 **Omarchy**（Arch + Hyprland + Wayland）上一键部署中文输入法栈：
     **雾凇全拼 + 万象 LMDG 整句模型 + 顶栏输入法图标 + 候选框跟随 Omarchy 主题配色**。
 
-    - 双拼按需可选：`--dsp zrm|flypy|mspy|sogou|abc|ziguang|jiajia`（F4 切方案，Alt+Space 切中英）
+    - 双拼按需可选：`--dsp zrm|flypy|mspy|sogou|abc|ziguang|jiajia`（F4 切方案）
+    - 键位（Omarchy 4.5+）：右 Shift 在 rime 内切中英，左 Shift 开/关输入法，`Super+I` 换输入法，`Ctrl+Space` 留给终端
     - X11/XWayland 应用（如微信）候选框过小时可选 `--x11-hidpi`：默认只诊断，撤销用 `--no-x11-hidpi`
     - 幂等可反复执行：重跑只改不同部分，`--dry-run` 预览，`uninstall` 回滚
+
+    **从 1.3.x 升级且已在 Omarchy 4.5 上换过主题**：`update --self` 会先跑旧版收敛，
+    而旧版主题生成器要覆写 `~/.local/share/fcitx5/themes/omarchy/*.svg`（4.5 已把它们变成指向
+    `/usr/share` 的符号链接）→ 可能报 `候选框主题生成：exit status 1` 并中止升级。绕过方式：
+    直接按下面命令下载本页的二进制（或用 `rm -rf ~/.local/share/fcitx5/themes/omarchy` 后再 `update --self`），
+    然后 `ompinyin install -y`。
 
     从本页按架构下载：`ompinyin_linux_amd64`（X86_64）或 `ompinyin_linux_arm64`（ARM64），
     下载后建议用 `checksums.txt` 里的 sha256 校验。安装：

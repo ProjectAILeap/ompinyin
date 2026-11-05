@@ -130,6 +130,25 @@ herdr 的前缀在它自己的配置里：`~/.config/herdr/config.toml` 的 `[ke
 如果按 `Ctrl+Space` 完全没反应：判据是按键前后各跑一次 `fcitx5-remote`，`2 → 1` 说明生效，`2 → 2` 说明键没到输入法
 （个别应用会自己抢占组合键；此时用顶栏输入法图标的菜单或 `fcitx5-remote -t`）。
 
+## 从 1.3.x 升级时 `update --self` 报「候选框主题生成：exit status 1」
+
+Omarchy 4.5 把 `~/.local/share/fcitx5/themes/omarchy/*.svg` 变成了指向 `/usr/share/fcitx5/themes/default/` 的
+符号链接，而 1.3.x 的主题生成器要**覆写**这些文件（写穿符号链接 → `Permission denied`），于是旧版收敛失败，
+`update --self` 在「升级自身」之前就退出了。两条绕过方式，任选其一：
+
+```bash
+# A. 直接换二进制（推荐：一步到位，终态由 1.4+ 的收敛负责清理旧产物）
+curl -fsSL -o /tmp/ompinyin https://github.com/ProjectAILeap/ompinyin/releases/latest/download/ompinyin_linux_amd64
+install -Dm755 /tmp/ompinyin ~/.local/bin/ompinyin
+ompinyin install -y
+
+# B. 先清掉可重建的主题目录，再让旧版自升级
+rm -rf ~/.local/share/fcitx5/themes/omarchy
+ompinyin update --self -y && ompinyin install -y
+```
+
+升级完成后 `ompinyin doctor` 应全绿，`fcitx5` 的启动参数里应有 `--disable notificationitem`（顶栏只留一个指示器）。
+
 ## 左 Shift 时灵时不灵 / 右侧 Shift 不能切中英
 
 两种情况都跑一次收敛（同时升级二进制与 rime 配置）：
