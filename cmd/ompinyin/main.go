@@ -1,6 +1,8 @@
 // Command ompinyin is the end-state convergence CLI for the Chinese input
-// method stack on Omarchy (§7): 雾凇全拼 + 万象 LMDG + 顶栏输入法图标,
-// double pinyin optional via --dsp.
+// method stack on Omarchy (§7): 雾凇全拼 + 万象 LMDG + Omarchy 自己的顶栏输入法指示器,
+// double pinyin optional via --dsp. Omarchy 4.5+ owns the IM hotkeys and the
+// candidate-window theme; ompinyin converges the rime data/config, the fcitx5
+// group shape, and cleans up what earlier versions created.
 package main
 
 import (
@@ -546,9 +548,10 @@ Usage:
 会覆盖它——裸跑 ` + "`ompinyin install`" + ` 不会静默掉你之前选的 --dsp / --no-model /
 --channel。去掉双拼用 ` + "`ompinyin switch --dsp none`" + `（或 install --dsp none）。
 
-顶栏输入法图标是必做终态：无 --tray-pin / --no-tray 选项，装上就有。
-切方案用 F4；触发键（Alt+Space）切中英。
-候选框跟随 Omarchy 主题配色：安装即生效；每次换主题自动刷新（无需重启 fcitx5）。
+顶栏输入法指示器由 Omarchy 提供（4.5+）：ompinyin 只保证 omarchy.keyboard-layout 在 bar 上，
+并清理旧版本自己装过的 notificationitem drop-in / Fcitx pin。
+热键归 Omarchy：Super+I 循环输入法、左 Shift 进出输入法、F4 选方案；Ctrl+Space 留给终端。
+候选框跟随 Omarchy 主题配色（由 omarchy-theme-set-fcitx5 生成）。
 
 X11 HiDPI 默认只诊断。--x11-hidpi 会写全局 XWayland Xft.dpi，可能让其它 X11/Electron
 应用二次缩放；混合 DPI 多屏无法同时精确，仅在已验证的旧 X11 应用候选框过小时启用。

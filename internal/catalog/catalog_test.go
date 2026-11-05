@@ -103,7 +103,7 @@ func TestDefaultPatchGolden(t *testing.T) {
 		"    - accept: comma\n      send: Page_Up\n      when: has_menu\n" +
 		"    - accept: period\n      send: Page_Down\n      when: has_menu\n" +
 		"  ascii_composer/good_old_caps_lock: true\n" +
-		"  ascii_composer/switch_key/Shift_L: commit_code\n" +
+		"  ascii_composer/switch_key/Shift_L: noop\n" +
 		"  ascii_composer/switch_key/Shift_R: commit_code\n" +
 		"  ascii_composer/switch_key/Control_L: noop\n" +
 		"  ascii_composer/switch_key/Control_R: noop\n" +
@@ -302,5 +302,24 @@ func TestSameIMs(t *testing.T) {
 	}
 	if SameIMs(a, []string{IMRime}) {
 		t.Error("length must matter")
+	}
+}
+
+// TestRemovedIMs: D2 — the installer's `pinyin` engine leaves the group, and
+// the plan/doctor must be able to NAME it instead of only saying "drifted".
+func TestRemovedIMs(t *testing.T) {
+	got := RemovedIMs([]string{"keyboard-us", "pinyin", "rime"}, []string{"rime", "keyboard-us"})
+	if len(got) != 1 || got[0] != "pinyin" {
+		t.Fatalf("removed = %v, want [pinyin]", got)
+	}
+	if got := RemovedIMs([]string{"rime", "keyboard-us"}, DefaultIMs()); len(got) != 0 {
+		t.Errorf("no removal expected, got %v", got)
+	}
+	if got := RemovedIMs(nil, DefaultIMs()); len(got) != 0 {
+		t.Errorf("empty group must remove nothing, got %v", got)
+	}
+	// surplus items are UNSETTLED only by declaration: everything extra goes
+	if got := RemovedIMs([]string{"rime", "pinyin", "mozc"}, []string{"rime"}); len(got) != 2 {
+		t.Errorf("removed = %v, want [pinyin mozc]", got)
 	}
 }

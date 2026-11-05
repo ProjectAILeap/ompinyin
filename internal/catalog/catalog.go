@@ -23,7 +23,7 @@ var Version = "1.0.0"
 // ManagedFormat is the version of the MANAGED FILE FORMAT, and the only thing
 // stamped into owned files. Bump it when the generated content changes shape,
 // so existing hosts converge to the new bytes exactly once.
-const ManagedFormat = "1.2.0"
+const ManagedFormat = "1.4.0"
 
 // ManagedHeader is the first line of every file ompinyin owns.
 func ManagedHeader() string {
@@ -97,6 +97,23 @@ func SameIMs(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// RemovedIMs returns the items of have that want does not declare. Convergence
+// removes them from the fcitx5 group (the engine and its package stay), so
+// plan/doctor can name them instead of only saying "the group drifted" (D2).
+func RemovedIMs(have, want []string) []string {
+	keep := make(map[string]bool, len(want))
+	for _, w := range want {
+		keep[w] = true
+	}
+	var out []string
+	for _, h := range have {
+		if !keep[h] {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // IsZero reports whether the desired state was never persisted.
@@ -289,8 +306,18 @@ const (
 const DefaultPageSize = 9
 
 // 受管手感项（§5.4）。中英切换由 rime 引擎的 ascii_composer 完成，与 fcitx5
-// 的 IM 列表无关：左右 Shift 都「先把已打编码上屏，再切到 ascii_mode」。
+// 的 IM 列表无关：右 Shift「先把已打编码上屏，再切到 ascii_mode」。
+//
+// 左 Shift 必须显式写成 noop。rime 出厂值是 `Shift_L: commit_code`，而 Omarchy
+// 4.5+ 又把左 Shift 交给 fcitx5 的 AltTriggerKeys（开/关输入法）——两边都处理这
+// 个键时，可见结果取决于当前激活状态和当前 IM，表现就是「按同一键有时进 rime、
+// 有时进英文键盘、有时要按两下」（adapt 4.5 §5.4 的调查）。写成 noop 后左 Shift
+// 只有 fcitx 一个主人，右边的 FlipSwitchKey 保持 rime 内中英。
 const FeelSwitchKey = "commit_code"
+
+// LeftShiftKey 是左 Shift 在 rime 里的占位值：交给 fcitx 的 AltTriggerKeys，
+// rime 不得再处理（§5.4）。
+const LeftShiftKey = "noop"
 
 // FullShapeSwitchIndex 是各 rime-ice 方案 `switches` 列表里 full_shape 的下标
 // （ascii_mode/ascii_punct/traditionalization/emoji/full_shape/search_single_char）。
@@ -331,13 +358,13 @@ func DefaultPatch(schemaList []string) string {
 	b.WriteString("    - accept: period\n")
 	b.WriteString("      send: Page_Down\n")
 	b.WriteString("      when: has_menu\n")
-	// §5.4 managed feel: 中英切换（左右 Shift 都上屏编码再切）、CapsLock 只切
-	// 大写、Ctrl 尾随不误切，以及「全半角不跨会话记忆」（与 GrammarPatch 的
+	// §5.4 managed feel: 中英切换（右 Shift 上屏编码再切）、左 Shift 交给 fcitx
+	// 的 AltTriggerKeys（rime 写 noop，否则两边抢同一个键）、CapsLock 只切大写、
+	// Ctrl 尾随不误切，以及「全半角不跨会话记忆」（与 GrammarPatch 的
 	// switches/@4/reset 配对）。
 	b.WriteString("  ascii_composer/good_old_caps_lock: true\n")
-	for _, k := range []string{"Shift_L", "Shift_R"} {
-		b.WriteString("  ascii_composer/switch_key/" + k + ": " + FeelSwitchKey + "\n")
-	}
+	b.WriteString("  ascii_composer/switch_key/Shift_L: " + LeftShiftKey + "\n")
+	b.WriteString("  ascii_composer/switch_key/Shift_R: " + FeelSwitchKey + "\n")
 	for _, k := range []string{"Control_L", "Control_R"} {
 		b.WriteString("  ascii_composer/switch_key/" + k + ": noop\n")
 	}

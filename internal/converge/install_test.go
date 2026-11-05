@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/ProjectAILeap/ompinyin/internal/assets"
+	"github.com/ProjectAILeap/ompinyin/internal/bar"
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/deploy"
 	"github.com/ProjectAILeap/ompinyin/internal/facts"
@@ -21,12 +22,14 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/hotkey"
 	"github.com/ProjectAILeap/ompinyin/internal/observe"
 	"github.com/ProjectAILeap/ompinyin/internal/pkgs"
+	"github.com/ProjectAILeap/ompinyin/internal/plan"
 	"github.com/ProjectAILeap/ompinyin/internal/profile"
 	"github.com/ProjectAILeap/ompinyin/internal/selfup"
 	"github.com/ProjectAILeap/ompinyin/internal/service"
 	"github.com/ProjectAILeap/ompinyin/internal/state"
 	"github.com/ProjectAILeap/ompinyin/internal/theme"
 	"github.com/ProjectAILeap/ompinyin/internal/tray"
+	"github.com/ProjectAILeap/ompinyin/internal/verify"
 )
 
 func realCmd(name string, args ...string) *exec.Cmd { return exec.Command(name, args...) }
@@ -60,6 +63,15 @@ var hidpiShowEnvironmentProd = hidpi.ShowEnvironment
 // fixtures stub it so T0 never shells out to the real pgrep.
 var serviceFcitxRunningProd = service.FcitxRunning
 
+// observeInputMethodsPathProd / themeLookPathProd preserve the 4.5 capability
+// probe and the upstream-theme-script probe; both are stubbed so T0 models a
+// 4.5 host on any machine (AGENTS.md 规则 7: new seam ⇒ sync setupFakeHost).
+var (
+	observeInputMethodsPathProd = observe.OmarchyInputMethodsPath
+	observeUnitExecStartProd    = observe.UnitExecStart
+	themeLookPathProd           = theme.LookPath
+)
+
 // serviceStraySeamsProd preserves the production stray-cleanup seams for the
 // same reason: a bare `pkill -x fcitx5` from a test would kill the developer's
 // own input method.
@@ -84,6 +96,8 @@ func jsonSlice(s string) []any {
 // fakeHost wires all exec seams to an in-memory fake host (T0, §15).
 type fakeHost struct {
 	unitActive  bool
+	barPuts     int // `omarchy bar put omarchy.keyboard-layout` calls
+	themeApply  int // omarchy-theme-set-fcitx5 --activate calls
 	barSets     [][]string
 	buildRuns   int
 	themeReload int
@@ -187,7 +201,11 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 	deploy.CompileSchemas = func(rimeDir string, schemas []string) error {
 		h.buildRuns++
 		for _, s := range schemas {
-			body := fmt.Sprintf("schema: %s\ngrammar:\n  language: %s\n  collocation_penalty: %d\ntranslator/max_homophones: %d\n",
+			// The switches list mirrors rime-ice's order, so doctor's index probe
+			// (switches[@4] == full_shape) is exercised by a converged fixture.
+			body := fmt.Sprintf("schema: %s\ngrammar:\n  language: %s\n  collocation_penalty: %d\ntranslator/max_homophones: %d\n"+
+				"switches:\n  - name: ascii_mode\n  - name: ascii_punct\n  - name: traditionalization\n"+
+				"  - name: emoji\n  - name: full_shape\n  - name: search_single_char\n",
 				s, catalog.GrammarLanguage, catalog.GrammarCollocationPenalty, catalog.GrammarMaxHomophones)
 			os.MkdirAll(filepath.Join(rimeDir, "build"), 0o755)
 			if werr := os.WriteFile(filepath.Join(rimeDir, "build", s+".schema.yaml"), []byte(body), 0o644); werr != nil {
@@ -200,16 +218,42 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 	// fake omarchy-shell: alive
 	tray.ShellRunning = func() bool { return true }
 
-	// fake candidate-window theming: theme.Run emulates the hook by writing a
-	// populated theme dir (the real hook reads colors.toml + omarchy-theme-color,
-	// neither of which exists on the fake host); Reload counts hot reloads; the
-	// UI font is deterministic so desired-byte comparisons stay stable.
-	theme.Run = func(name string, args ...string) error {
-		dir := theme.ThemeDir(home)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
+	// Omarchy 4.5 capability probe: point it at a marker INSIDE the fake home so
+	// T0 is hermetic and the default fixture is a 4.5 host. Tests that model an
+	// upgraded 4.0 machine remove the file (useLegacyOmarchy).
+	observe.OmarchyInputMethodsPath = filepath.Join(home, "omarchy", "input-methods", "indicator.py")
+	os.MkdirAll(filepath.Dir(observe.OmarchyInputMethodsPath), 0o755)
+	os.WriteFile(observe.OmarchyInputMethodsPath, []byte("# Omarchy's own IM indicator\n"), 0o644)
+
+	// fake `systemctl show -p ExecStart --value`: systemd applies the .d/ drop-ins,
+	// so the EFFECTIVE value loses Omarchy's `--disable notificationitem` as soon
+	// as any drop-in or override.conf resets ExecStart (that is the whole bug).
+	observe.UnitExecStart = func(unit string) (string, error) {
+		if dropInRewritesExecStart(home, unit) {
+			return "{ path=/usr/bin/fcitx5 ; argv[]=/usr/bin/fcitx5 --replace }", nil
 		}
-		return os.WriteFile(filepath.Join(dir, "theme.conf"), []byte("[Metadata]\nName=Omarchy\n"), 0o644)
+		return "{ path=/usr/bin/fcitx5 ; argv[]=/usr/bin/fcitx5 --replace --disable notificationitem }", nil
+	}
+
+	// fake `omarchy bar put omarchy.keyboard-layout`: persists the widget the same
+	// way the shell does (into shell.json) and counts the call.
+	bar.Run = func(name string, args ...string) error {
+		if name == "omarchy" && len(args) >= 2 && args[0] == "bar" && args[1] == "put" {
+			h.barPuts++
+			if len(args) >= 3 {
+				putBarWidget(home, args[2])
+			}
+		}
+		return nil
+	}
+
+	// fake candidate-window theming: Omarchy owns the colors now, so theme.Run is
+	// the upstream generator (counted, not executed); Reload counts hot reloads;
+	// the UI font is deterministic so desired-byte comparisons stay stable.
+	theme.LookPath = func(string) (string, error) { return "/usr/bin/omarchy-theme-set-fcitx5", nil }
+	theme.Run = func(name string, args ...string) error {
+		h.themeApply++
+		return nil
 	}
 	theme.Reload = func() error { h.themeReload++; return nil }
 	theme.CurrentFont = func() string { return "TestFont" }
@@ -283,12 +327,78 @@ func setupFakeHost(t *testing.T, home string) *fakeHost {
 		hidpi.ShowEnvironment = hidpiShowEnvironmentProd
 		tray.ShellRunning = nil
 		tray.Run = nil
+		bar.Run = nil
 		theme.Run = nil
+		theme.LookPath = themeLookPathProd
+		observe.OmarchyInputMethodsPath = observeInputMethodsPathProd
+		observe.UnitExecStart = observeUnitExecStartProd
 		theme.Reload = nil
 		theme.CurrentFont = nil
 		assets.ResolveStableTag = assetsResolveStableTagProd
 	})
 	return h
+}
+
+// putBarWidget appends one bar widget to shell.json's right section (what
+// `omarchy bar put <id>` does, idempotently).
+func putBarWidget(home, id string) {
+	p := tray.ShellJSONPath(home)
+	var root map[string]any
+	if b, err := os.ReadFile(p); err == nil {
+		if jsonErr := jsonUnmarshal(b, &root); jsonErr != nil {
+			root = map[string]any{}
+		}
+	} else {
+		root = map[string]any{}
+	}
+	barSection, _ := root["bar"].(map[string]any)
+	if barSection == nil {
+		barSection = map[string]any{}
+		root["bar"] = barSection
+	}
+	layout, _ := barSection["layout"].(map[string]any)
+	if layout == nil {
+		layout = map[string]any{}
+		barSection["layout"] = layout
+	}
+	right, _ := layout["right"].([]any)
+	for _, e := range right {
+		if em, ok := e.(map[string]any); ok && em["id"] == id {
+			return
+		}
+	}
+	layout["right"] = append(right, map[string]any{"id": id})
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	os.WriteFile(p, jsonMarshal(root), 0o644)
+}
+
+// dropInRewritesExecStart models systemd's drop-in precedence for the fake host:
+// any file in the unit's .d/ (ours, v1.0's override.conf, or a hand-written one)
+// that assigns ExecStart replaces the unit's own line — which is how the
+// `--disable notificationitem` flag disappears and fcitx5 starts publishing its
+// own tray item again.
+func dropInRewritesExecStart(home, unit string) bool {
+	for _, rel := range []string{tray.LegacyOverrideRelPath(unit), tray.DropInRelPath(unit), tray.DropInRelPathLegacy} {
+		b, err := os.ReadFile(filepath.Join(home, filepath.FromSlash(rel)))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "ExecStart="); ok && strings.TrimSpace(v) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// useLegacyOmarchy turns the fake host into a pre-4.5 Omarchy (no
+// default/input-methods/indicator.py), i.e. the frozen old code path (D3).
+func useLegacyOmarchy(t *testing.T) {
+	t.Helper()
+	if err := os.Remove(observe.OmarchyInputMethodsPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 }
 
 // seedCache pre-seeds the asset cache so no network is touched. Every cache
@@ -374,39 +484,31 @@ func TestInstallConvergesDefaultTerminalState(t *testing.T) {
 	if got := profile.GroupIMs(string(pb)); !catalog.SameIMs(got, catalog.DefaultIMs()) {
 		t.Errorf("group shape = %v; want %v\n%s", got, catalog.DefaultIMs(), pb)
 	}
-	// L4 hotkeys with whitelist keysyms, and the alt-trigger section emptied so
-	// left Shift stays inside rime (fcitx5 ships Shift_L there).
+	// L4 hotkeys belong to Omarchy: nothing of ours is written, and the
+	// AltTriggerKeys section is NEVER touched (upstream rewrites it).
 	cb, _ := os.ReadFile(observe.ConfigPath())
-	if !strings.Contains(string(cb), "0=Control+space") || strings.Contains(string(cb), "1=Control+Shift_L") {
-		t.Errorf("hotkey config wrong:\n%s", cb)
+	if strings.Contains(strings.ToLower(string(cb)), "control+space") {
+		t.Errorf("4.5 must not write Control+space:\n%s", cb)
 	}
-	if keys := hotkey.AltTriggerKeys(string(cb)); len(keys) != 0 {
-		t.Errorf("AltTriggerKeys must be emptied, got %v\n%s", keys, cb)
+	if hotkey.HasEmptyAltTrigger(string(cb)) {
+		t.Errorf("4.5 must not create an empty [Hotkey/AltTriggerKeys] section:\n%s", cb)
 	}
-	if !hotkey.HasEmptyAltTrigger(string(cb)) {
-		t.Errorf("empty [Hotkey/AltTriggerKeys] section missing (absent section means fcitx5 falls back to Shift_L):\n%s", cb)
+	// L4 tray: no drop-in, no SNI pin — Omarchy's widget is on the bar instead
+	if _, err := os.Stat(tray.DropInPath(home, "omarchy-fcitx5.service")); !os.IsNotExist(err) {
+		t.Error("4.5 must not install the notificationitem drop-in")
 	}
-	// L4 drop-in removes --disable notificationitem (dedicated filename)
-	db, _ := os.ReadFile(tray.DropInPath(home, "omarchy-fcitx5.service"))
-	if !strings.Contains(string(db), "ExecStart=/usr/bin/fcitx5") ||
-		strings.Contains(string(db), "notificationitem}") {
-		// the ExecStart line must not carry the disable flag
-		for _, line := range strings.Split(string(db), "\n") {
-			if strings.HasPrefix(line, "ExecStart") && strings.Contains(line, "notificationitem") {
-				t.Errorf("drop-in still disables notificationitem: %s", line)
-			}
-		}
-	}
-	// L4 tray pin: written as an ARRAY into shell.json (Tray.qml needs array)
 	sj, _ := os.ReadFile(tray.ShellJSONPath(home))
-	pinned, perr := tray.ReadPinned(sj)
-	if perr != nil || !tray.HasPin(pinned) {
-		t.Errorf("shell.json pinned not set: %v err=%v\n%s", pinned, perr, sj)
-	} else if len(pinned) > 1 {
-		t.Errorf("unexpected extra pins: %v", pinned)
+	if pinned, perr := tray.ReadPinned(sj); perr != nil || len(pinned) != 0 {
+		t.Errorf("4.5 must not pin Fcitx: %v err=%v\n%s", pinned, perr, sj)
 	}
-	// L4 candidate-window theming (§6.6): classicui.conf points at the theme
-	// and the theme-set hook + generated dir are in place
+	if !bar.IndicatorPresent(sj) {
+		t.Errorf("bar indicator missing after install:\n%s", sj)
+	}
+	if h.barPuts != 1 {
+		t.Errorf("omarchy bar put ran %d times, want 1", h.barPuts)
+	}
+	// L4 candidate-window theming (§6.6): classicui.conf is ours, the colors are
+	// Omarchy's generator's, and our old hook is NOT installed
 	cb2, _ := os.ReadFile(theme.ConfPath(home))
 	if !strings.HasPrefix(string(cb2), "# managed by ompinyin") || !strings.Contains(string(cb2), "Theme=omarchy") {
 		t.Errorf("classicui.conf not converged:\n%s", cb2)
@@ -414,12 +516,11 @@ func TestInstallConvergesDefaultTerminalState(t *testing.T) {
 	if !strings.Contains(string(cb2), "Font=TestFont 12") {
 		t.Errorf("classicui.conf missing the Omarchy font:\n%s", cb2)
 	}
-	hb, _ := os.ReadFile(theme.HookPath(home))
-	if !strings.HasPrefix(string(hb), "# managed by ompinyin") || !strings.Contains(string(hb), "ReloadAddonConfig") {
-		t.Errorf("theme-set hook not installed:\n%s", hb)
+	if _, err := os.Stat(theme.HookPath(home)); !os.IsNotExist(err) {
+		t.Error("the retired theme-set hook must not be (re)installed")
 	}
-	if _, err := os.Stat(filepath.Join(theme.ThemeDir(home), "theme.conf")); err != nil {
-		t.Errorf("theme dir not generated: %v", err)
+	if h.themeApply != 1 {
+		t.Errorf("omarchy-theme-set-fcitx5 ran %d times, want 1", h.themeApply)
 	}
 	if h.themeReload != 1 {
 		t.Errorf("fcitx5 theme reload ran %d times, want 1", h.themeReload)
@@ -477,11 +578,9 @@ func TestInstallIdempotent(t *testing.T) {
 	if h.themeReload != 1 {
 		t.Errorf("theme hot reload ran %d times, want 1", h.themeReload)
 	}
-	// the pin must be idempotent: second re-convergence does not change it
-	sj, _ := os.ReadFile(tray.ShellJSONPath(home))
-	pinned, _ := tray.ReadPinned(sj)
-	if !tray.HasPin(pinned) {
-		t.Errorf("pin lost after second run: %v", pinned)
+	// neither the bar put nor the upstream generator may re-run
+	if h.barPuts != 1 || h.themeApply != 1 {
+		t.Errorf("idempotent re-run re-did work: barPuts=%d themeApply=%d", h.barPuts, h.themeApply)
 	}
 }
 
@@ -667,7 +766,7 @@ func TestConvergedRunCreatesNoBackup(t *testing.T) {
 		"[跳过] L2 数据资产已就位",
 		"[跳过] L3 受管配置与终态一致",
 		"[跳过] L4 stop 窗口未开启",
-		"[跳过] L4 托盘已 pin",
+		"[跳过] L4 无旧 Fcitx pin 残留",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("re-run must print %q:\n%s", want, s)
@@ -728,9 +827,12 @@ func TestDaemonReloadFailureRestartsFcitx(t *testing.T) {
 	if c := Install(catalog.DefaultDesired(), false, o1); c != ExitOK {
 		t.Fatalf("warmup: %d\n%s", c, out1)
 	}
-	// force work INSIDE the window that reaches daemon-reload: the drop-in is
-	// missing, so L4 host work (and the reload) is required
-	if err := os.Remove(tray.DropInPath(home, "omarchy-fcitx5.service")); err != nil {
+	// force work INSIDE the window that reaches daemon-reload: a leftover
+	// Control+space is 4.5 host work, so the stop window (and the reload) opens
+	if err := os.MkdirAll(filepath.Dir(observe.ConfigPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(observe.ConfigPath(), []byte("[Hotkey/TriggerKeys]\n0=Control+space\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	orig := service.Run
@@ -815,6 +917,7 @@ func TestChannelChangeForcesL2(t *testing.T) {
 func TestDropInFollowsGenericUnit(t *testing.T) {
 	home := t.TempDir()
 	setupFakeHost(t, home)
+	useLegacyOmarchy(t) // the drop-in only exists on the pre-4.5 path
 	seedCache(t, home)
 	// make FindUnit discover the generic unit (hermetic: no real system units)
 	service.SystemUnitDirs = nil
@@ -915,7 +1018,7 @@ func TestStatusJSON(t *testing.T) {
 	if rep.Plan.NeedsApply {
 		t.Errorf("converged host must report needsApply=false: %+v", rep.Plan)
 	}
-	if !rep.Host.DropInOK || !rep.Host.PinnedHasFcitx || !rep.Host.ThemeOK {
+	if !rep.Host.BarIndicator || !rep.Host.ThemeOK || rep.Host.StaleTrayArtifacts {
 		t.Errorf("host report wrong: %+v", rep.Host)
 	}
 	if rep.Version == "" {
@@ -1093,9 +1196,9 @@ func TestThemeOwnershipProtocol(t *testing.T) {
 	}
 }
 
-// TestUninstallRemovesThemeFootprint: uninstall must delete classicui.conf,
-// the theme-set hook and the hook-generated theme dir, and drop the ledger
-// records — leaving fcitx5 with the default candidate window.
+// TestUninstallRemovesThemeFootprint: uninstall must delete classicui.conf and
+// retire the pre-4.5 artifacts (hook + our two SVGs) while leaving Omarchy's
+// generated theme in place — the theme directory is no longer ours.
 func TestUninstallRemovesThemeFootprint(t *testing.T) {
 	home := t.TempDir()
 	h := setupFakeHost(t, home)
@@ -1105,10 +1208,26 @@ func TestUninstallRemovesThemeFootprint(t *testing.T) {
 	if c := Install(catalog.DefaultDesired(), false, opts); c != ExitOK {
 		t.Fatalf("install exit=%d\n%s", c, out.String())
 	}
-	for _, p := range []string{theme.ConfPath(home), theme.HookPath(home), filepath.Join(theme.ThemeDir(home), "theme.conf")} {
-		if _, err := os.Stat(p); err != nil {
-			t.Fatalf("precondition %s missing: %v", p, err)
+	// a host upgraded from <=1.3 still carries the hook and the SVGs
+	themeDir := filepath.Join(home, ".local", "share", "fcitx5", "themes", "omarchy")
+	if err := os.MkdirAll(themeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []string{
+		theme.HookPath(home),
+		filepath.Join(themeDir, "background.svg"),
+		filepath.Join(themeDir, "highlight.svg"),
+	}
+	if err := os.MkdirAll(filepath.Dir(theme.HookPath(home)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range append(legacy, filepath.Join(themeDir, "theme.conf")) {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
 		}
+	}
+	if _, err := os.Stat(theme.ConfPath(home)); err != nil {
+		t.Fatalf("precondition: classicui.conf missing: %v", err)
 	}
 
 	if c := Uninstall(opts); c != ExitOK {
@@ -1117,11 +1236,13 @@ func TestUninstallRemovesThemeFootprint(t *testing.T) {
 	if _, err := os.Stat(theme.ConfPath(home)); !os.IsNotExist(err) {
 		t.Errorf("classicui.conf left behind")
 	}
-	if _, err := os.Stat(theme.HookPath(home)); !os.IsNotExist(err) {
-		t.Errorf("theme-set hook left behind")
+	for _, p := range legacy {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("pre-4.5 artifact %s left behind", p)
+		}
 	}
-	if _, err := os.Stat(theme.ThemeDir(home)); !os.IsNotExist(err) {
-		t.Errorf("theme dir left behind")
+	if _, err := os.Stat(filepath.Join(themeDir, "theme.conf")); err != nil {
+		t.Errorf("Omarchy's own theme.conf must not be deleted: %v", err)
 	}
 	if _, err := os.Stat(state.Path()); !os.IsNotExist(err) {
 		t.Error("state.json not removed by uninstall")
@@ -1438,6 +1559,7 @@ func writeLocalRimeIce(t *testing.T, dir string) {
 func TestInstallRepairsDisabledDropIn(t *testing.T) {
 	home := t.TempDir()
 	setupFakeHost(t, home)
+	useLegacyOmarchy(t) // the drop-in only exists on the pre-4.5 path
 	seedCache(t, home)
 
 	o1, out1 := newTestOpts()
@@ -1749,6 +1871,7 @@ func TestApplyX11HiDPIResolvesSessionEnvFromManager(t *testing.T) {
 func TestInstallConvergesLegacyGroupAndAltTrigger(t *testing.T) {
 	home := t.TempDir()
 	setupFakeHost(t, home)
+	useLegacyOmarchy(t) // the AltTrigger/trigger-key write path is pre-4.5 only
 	seedCache(t, home)
 
 	// legacy profile: keyboard-us first, rime second (what EnsureRime produced).
@@ -1799,5 +1922,423 @@ func TestInstallConvergesLegacyGroupAndAltTrigger(t *testing.T) {
 	matches, _ = filepath.Glob(filepath.Join(home, ".local", "state", "ompinyin", "backup-*"))
 	if len(matches) != before {
 		t.Errorf("converged re-run created a backup directory (before=%d after=%d)", before, len(matches))
+	}
+}
+
+// TestInstallUpgradesFortyToFortyFive is the 4.5 migration fixture (§8.5): a
+// host that ran ompinyin on Omarchy 4.0 (4.5 is a direct successor) and then
+// old path created is on disk — notificationitem drop-in, `Fcitx` pin, theme-set
+// hook + background.svg, Control+space trigger, the group order old versions
+// wrote — and Omarchy's own config has no [Hotkey/AltTriggerKeys] section. One
+// convergence must reach the 4.5 terminal state and the second must be a no-op.
+func TestInstallUpgradesFortyToFortyFive(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	seedCache(t, home)
+	d := catalog.DefaultDesired()
+
+	// --- the pre-4.5 footprint -------------------------------------------
+	if _, err := tray.WriteDropIn(home, "omarchy-fcitx5.service", tray.DropInContent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(tray.ShellJSONPath(home)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := tray.SetPinned(tray.ShellJSONPath(home), []string{"Fcitx"}); err != nil {
+		t.Fatal(err)
+	}
+	hook := theme.HookPath(home)
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte("#!/usr/bin/env bash\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	themeDir := filepath.Join(home, ".local", "share", "fcitx5", "themes", "omarchy")
+	if err := os.MkdirAll(themeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svg := filepath.Join(themeDir, "background.svg")
+	if err := os.WriteFile(svg, []byte("<svg/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Omarchy 4.5's own config: no trigger keys of ours, and NO AltTriggerKeys
+	// section (its migration fills that in; ompinyin must not create it).
+	if err := os.MkdirAll(filepath.Dir(observe.ConfigPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(observe.ConfigPath(), []byte("[Hotkey/TriggerKeys]\n0=Control+space\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// the profile shape old versions wrote: keyboard-us first
+	legacyProfile := "[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=rime\n\n" +
+		"[Groups/0/Items/0]\nName=keyboard-us\nLayout=\n\n" +
+		"[Groups/0/Items/1]\nName=rime\nLayout=\n\n[GroupOrder]\n0=Groups/0\n"
+	if err := os.MkdirAll(filepath.Dir(observe.ProfilePath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(observe.ProfilePath(), []byte(legacyProfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// the dry-run must announce the migration and the hotkey hand-over
+	var out, errb bytes.Buffer
+	dry := Options{Stdout: &out, Stderr: &errb, Yes: true, DryRun: true}
+	if c := Install(d, false, dry); c != ExitOK {
+		t.Fatalf("dry-run exit=%d\n%s", c, errb.String())
+	}
+	if !strings.Contains(out.String(), "清理旧 drop-in/pin") || !strings.Contains(out.String(), "Control+space") {
+		t.Errorf("dry-run must announce the cleanup:\n%s", out.String())
+	}
+	if len(backupDirs(t, home)) != 0 {
+		t.Fatal("--dry-run must not create a backup")
+	}
+
+	// --- one real convergence --------------------------------------------
+	opts, log := newTestOpts()
+	if c := Install(d, false, opts); c != ExitOK {
+		t.Fatalf("upgrade install exit=%d\n%s", c, log.String())
+	}
+
+	// old artifacts are gone
+	if _, err := os.Stat(tray.DropInPath(home, "omarchy-fcitx5.service")); !os.IsNotExist(err) {
+		t.Error("notificationitem drop-in survived the upgrade")
+	}
+	sj, _ := os.ReadFile(tray.ShellJSONPath(home))
+	if pinned, _ := tray.ReadPinned(sj); tray.HasPin(pinned) {
+		t.Errorf("Fcitx pin survived: %v", pinned)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", "omarchy-fcitx5.service.d")); !os.IsNotExist(err) {
+		t.Error("the emptied .d directory left behind")
+	}
+	if _, err := os.Stat(hook); !os.IsNotExist(err) {
+		t.Error("theme-set hook survived the upgrade")
+	}
+	if _, err := os.Stat(svg); !os.IsNotExist(err) {
+		t.Error("our generated background.svg survived the upgrade")
+	}
+	if !bar.IndicatorPresent(sj) {
+		t.Errorf("bar indicator not put on an upgrading host:\n%s", sj)
+	}
+
+	// Control+space is gone; the empty AltTriggerKeys section must NOT exist
+	cb, _ := os.ReadFile(observe.ConfigPath())
+	if strings.Contains(strings.ToLower(string(cb)), "control+space") {
+		t.Errorf("Control+space survived:\n%s", cb)
+	}
+	if hotkey.HasEmptyAltTrigger(string(cb)) || strings.Contains(string(cb), "AltTriggerKeys") {
+		t.Errorf("ompiyin must not create [Hotkey/AltTriggerKeys] (Omarchy owns it):\n%s", cb)
+	}
+
+	// the group is the declared one, in declaration order
+	pb, _ := os.ReadFile(observe.ProfilePath())
+	if got := profile.GroupIMs(string(pb)); !catalog.SameIMs(got, catalog.DefaultIMs()) {
+		t.Errorf("group = %v, want %v\n%s", got, catalog.DefaultIMs(), pb)
+	}
+
+	// exactly ONE backup for the whole run (one snapshot of the user's originals)
+	if dirs := backupDirs(t, home); len(dirs) != 1 {
+		t.Errorf("backups = %v, want exactly one", dirs)
+	} else if b, err := os.ReadFile(filepath.Join(dirs[0], ".config", "fcitx5", "config")); err != nil ||
+		!strings.Contains(string(b), "Control+space") {
+		t.Errorf("the pre-change config must be in the backup (err=%v):\n%s", err, b)
+	}
+
+	// --- idempotence ------------------------------------------------------
+	opts2, log2 := newTestOpts()
+	if c := Install(d, false, opts2); c != ExitOK {
+		t.Fatalf("second run exit=%d\n%s", c, log2.String())
+	}
+	if dirs := backupDirs(t, home); len(dirs) != 1 {
+		t.Errorf("converged re-run created a backup: %v", dirs)
+	}
+	if h.barPuts != 1 || h.themeApply != 1 {
+		t.Errorf("converged re-run re-did work: barPuts=%d themeApply=%d", h.barPuts, h.themeApply)
+	}
+	st, err := state.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := plan.Diff(d, observe.Collect(d, st), false); p.NeedsApply() {
+		t.Errorf("converged host still needs apply:\n%s", p.Describe())
+	}
+
+	// status --json must agree with the plan it just printed
+	var buf bytes.Buffer
+	if c := Status(Options{Stdout: &buf, Stderr: &buf, Yes: true, JSON: true}); c != ExitOK {
+		t.Fatalf("status --json exit=%d\n%s", c, buf.String())
+	}
+	var rep StatusReport
+	if err := json.Unmarshal(buf.Bytes(), &rep); err != nil {
+		t.Fatalf("status --json is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if rep.Plan.NeedsApply {
+		t.Errorf("status must report needsApply=false: %+v", rep.Plan)
+	}
+
+	// doctor: the IM rows must all be green. The env red line probes
+	// /usr/share/omarchy (no seam), so the overall exit code is only asserted on
+	// a host that actually has Omarchy installed.
+	checks := verify.Doctor(d, observe.Collect(d, st))
+	for _, name := range []string{"顶栏输入法指示器", "触发键", "输入法组", "候选框主题", "AltTriggerKeys"} {
+		for _, chk := range checks {
+			if chk.Name == name && !chk.OK {
+				t.Errorf("doctor %s must pass: %s", name, chk.Detail)
+			}
+		}
+	}
+	if _, err := os.Stat("/usr/share/omarchy/default/environment.d/10-omarchy-fcitx.conf"); err == nil {
+		var dbuf bytes.Buffer
+		if c := Doctor(Options{Stdout: &dbuf, Stderr: &dbuf, Yes: true, JSON: true}); c != ExitOK {
+			t.Errorf("doctor exit=%d\n%s", c, dbuf.String())
+		}
+	}
+}
+
+// TestInstallRemovesLegacyDropInInsideStopWindow locks the sequencing that makes
+// the duplicate top-bar icon actually disappear: the pre-4.5 drop-in re-enabled
+// fcitx5's SNI item, and the RUNNING instance was started with it, so deleting
+// the file alone leaves the icon until the next login. The removal therefore has
+// to (a) count as stop-window work (plan.NeedHost) and (b) happen while the unit
+// is stopped, before daemon-reload + the deferred start.
+func TestInstallRemovesLegacyDropInInsideStopWindow(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	seedCache(t, home)
+	d := catalog.DefaultDesired()
+
+	// converge once so everything else (profile, group, bar, theme) is at the
+	// terminal state and only the leftover drop-in is off target.
+	o1, out1 := newTestOpts()
+	if c := Install(d, false, o1); c != ExitOK {
+		t.Fatalf("warmup install exit=%d\n%s", c, out1)
+	}
+	if h.unitActive != true {
+		t.Fatal("precondition: the unit must be running")
+	}
+	if _, err := tray.WriteDropIn(home, "omarchy-fcitx5.service", tray.DropInContent); err != nil {
+		t.Fatal(err)
+	}
+
+	// the plan must treat it as HOST (stop-window) work, not just tray work
+	cur := observe.Collect(d, mustLoadState(t))
+	if !cur.StaleTray || !cur.DropInExists {
+		t.Fatalf("precondition: the drop-in must read as residue: %+v", cur)
+	}
+	p := plan.Diff(d, cur, false)
+	if !p.NeedHost {
+		t.Fatalf("a leftover drop-in must open the stop window (deleting it out of band leaves the icon alive):\n%s", p.Describe())
+	}
+	if !p.NeedTray {
+		t.Errorf("the drop-in residue is also tray work:\n%s", p.Describe())
+	}
+	if out := p.Describe(); !strings.Contains(out, "旧 notificationitem drop-in") {
+		t.Errorf("plan must name the drop-in work:\n%s", out)
+	}
+
+	// one run: the window opens (stop → daemon-reload → start) and the file is
+	// gone by the time fcitx5 is restarted
+	o2, out2 := newTestOpts()
+	if c := Install(d, false, o2); c != ExitOK {
+		t.Fatalf("install exit=%d\n%s", c, out2.String())
+	}
+	log := out2.String()
+	stopAt := strings.Index(log, "[完成] L4 stop omarchy-fcitx5.service")
+	reloadAt := strings.Index(log, "[完成] L4 start omarchy-fcitx5.service")
+	removeAt := strings.Index(log, "已移除旧的 notificationitem drop-in")
+	if stopAt < 0 || reloadAt < 0 {
+		t.Fatalf("the stop window must open for the drop-in removal:\n%s", log)
+	}
+	if removeAt < 0 {
+		t.Fatalf("the removal must be reported:\n%s", log)
+	}
+	if stopAt >= removeAt || removeAt >= reloadAt {
+		t.Errorf("drop-in must be removed between stop and start (stop=%d remove=%d start=%d):\n%s", stopAt, removeAt, reloadAt, log)
+	}
+	if _, err := os.Stat(tray.DropInPath(home, "omarchy-fcitx5.service")); !os.IsNotExist(err) {
+		t.Error("drop-in survived the run")
+	}
+	if !h.unitActive {
+		t.Error("fcitx5 left stopped — user has no input method")
+	}
+
+	// and the next run is a true no-op: no window, no removal line
+	o3, out3 := newTestOpts()
+	if c := Install(d, false, o3); c != ExitOK {
+		t.Fatalf("re-run exit=%d\n%s", c, out3.String())
+	}
+	if !strings.Contains(out3.String(), "[跳过] L4 stop 窗口未开启") {
+		t.Errorf("converged re-run must keep the stop window closed:\n%s", out3.String())
+	}
+	if strings.Contains(out3.String(), "已移除旧的 notificationitem drop-in") {
+		t.Errorf("re-run must not re-report a removal:\n%s", out3.String())
+	}
+}
+
+// mustLoadState loads the ledger or fails the test.
+func mustLoadState(t *testing.T) *state.State {
+	t.Helper()
+	st, err := state.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// TestInstallRemovesLegacyV1Override is the field bug from a real 4.5 host:
+// ompinyin v1.0 (commit 7c289dc) wrote a GENERIC override.conf with no managed
+// header, so it cannot be recognised by name:
+//
+//	[Service]
+//	ExecStart=
+//	ExecStart=/usr/bin/fcitx5
+//
+// It replaces Omarchy's `--replace --disable notificationitem`, fcitx5 keeps
+// publishing its own SNI item, and the bar shows TWO input-method icons. Removing
+// it only takes effect on restart, so it belongs inside the stop window.
+func TestInstallRemovesLegacyV1Override(t *testing.T) {
+	home := t.TempDir()
+	h := setupFakeHost(t, home)
+	seedCache(t, home)
+	d := catalog.DefaultDesired()
+	const unit = "omarchy-fcitx5.service"
+
+	// a converged 4.5 host ...
+	o1, out1 := newTestOpts()
+	if c := Install(d, false, o1); c != ExitOK {
+		t.Fatalf("warmup install exit=%d\n%s", c, out1)
+	}
+	// ... that still carries the v1.0 override from an ancient run
+	over := tray.LegacyOverridePath(home, unit)
+	if err := os.MkdirAll(filepath.Dir(over), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(over, []byte(tray.LegacyOverrideBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cur := observe.Collect(d, mustLoadState(t))
+	if !cur.StaleOverride || !cur.StaleTray {
+		t.Fatalf("precondition: the v1.0 override must read as residue: %+v", cur)
+	}
+	if cur.ExecStartOK {
+		t.Fatal("precondition: the effective ExecStart must have lost the disable flag")
+	}
+	p := plan.Diff(d, cur, false)
+	if !p.NeedHost {
+		t.Fatalf("a leftover override.conf must open the stop window:\n%s", p.Describe())
+	}
+	if !strings.Contains(p.Describe(), "override.conf") {
+		t.Errorf("plan must name the override:\n%s", p.Describe())
+	}
+
+	// one run: removed inside the stop window, before the restart
+	o2, out2 := newTestOpts()
+	if c := Install(d, false, o2); c != ExitOK {
+		t.Fatalf("install exit=%d\n%s", c, out2.String())
+	}
+	log := out2.String()
+	removeAt := strings.Index(log, "已移除 v1.0 的 override.conf")
+	startAt := strings.Index(log, "[完成] L4 start omarchy-fcitx5.service")
+	if removeAt < 0 {
+		t.Fatalf("the removal must be reported honestly:\n%s", log)
+	}
+	if startAt < 0 || removeAt > startAt {
+		t.Errorf("the override must be removed before the unit restarts (remove=%d start=%d):\n%s", removeAt, startAt, log)
+	}
+	if _, err := os.Stat(over); !os.IsNotExist(err) {
+		t.Fatal("v1.0 override.conf survived the convergence")
+	}
+	// §5.1: the deleted file was snapshotted first
+	dirs := backupDirs(t, home)
+	found := false
+	for _, dir := range dirs {
+		if _, err := os.Stat(filepath.Join(dir, ".config", "systemd", "user", unit+".d", "override.conf")); err == nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the override was deleted without a backup: %v", dirs)
+	}
+	// ... and the effective ExecStart is Omarchy's own again
+	if cur := observe.Collect(d, mustLoadState(t)); !cur.ExecStartOK || cur.StaleOverride {
+		t.Errorf("after the run the effective ExecStart must keep --disable notificationitem: %+v", cur)
+	}
+	if !h.unitActive {
+		t.Error("fcitx5 left stopped — user has no input method")
+	}
+
+	// second run: nothing left to do
+	st := mustLoadState(t)
+	if q := plan.Diff(d, observe.Collect(d, st), false); q.NeedsApply() {
+		t.Errorf("converged host still needs apply:\n%s", q.Describe())
+	}
+	o3, out3 := newTestOpts()
+	if c := Install(d, false, o3); c != ExitOK {
+		t.Fatalf("re-run exit=%d\n%s", c, out3.String())
+	}
+	if strings.Contains(out3.String(), "已移除 v1.0 的 override.conf") {
+		t.Errorf("re-run must not re-report a removal:\n%s", out3.String())
+	}
+}
+
+// TestInstallKeepsUserOverride: the same file name may hold a USER's own config.
+// ompinyin must not delete it — but it must not stay silent either: the effective
+// ExecStart is still overridden, so L5/doctor fail and point at the directory.
+func TestInstallKeepsUserOverride(t *testing.T) {
+	home := t.TempDir()
+	setupFakeHost(t, home)
+	seedCache(t, home)
+	d := catalog.DefaultDesired()
+	const unit = "omarchy-fcitx5.service"
+
+	o1, out1 := newTestOpts()
+	if c := Install(d, false, o1); c != ExitOK {
+		t.Fatalf("warmup install exit=%d\n%s", c, out1)
+	}
+	over := tray.LegacyOverridePath(home, unit)
+	userBody := "[Service]\nExecStart=\nExecStart=/usr/local/bin/fcitx5 --replace --log-level=debug\n"
+	if err := os.MkdirAll(filepath.Dir(over), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(over, []byte(userBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cur := observe.Collect(d, mustLoadState(t))
+	if cur.StaleOverride {
+		t.Fatal("a user-authored override must not be classified as our residue")
+	}
+	if cur.ExecStartOK {
+		t.Fatal("precondition: the effective ExecStart is overridden")
+	}
+	// not our file → not our work → the plan must not offer to delete it
+	if p := plan.Diff(d, cur, false); p.NeedHost {
+		t.Errorf("a user override is not stop-window work:\n%s", p.Describe())
+	}
+
+	o2, out2 := newTestOpts()
+	if c := Install(d, false, o2); c != ExitExecFail {
+		t.Fatalf("install must fail L5 while the ExecStart is overridden, got %d\n%s", c, out2.String())
+	}
+	b, err := os.ReadFile(over)
+	if err != nil || string(b) != userBody {
+		t.Fatalf("user override was touched (err=%v):\n%s", err, b)
+	}
+	if !strings.Contains(out2.String(), "已移除 v1.0 的 override.conf") &&
+		!strings.Contains(out2.String(), "[失败] L5 fcitx5 启动参数") {
+		t.Errorf("the failure must be explained:\n%s", out2.String())
+	}
+
+	// doctor: red, naming the drop-in dir and the file
+	var dbuf bytes.Buffer
+	code := Doctor(Options{Stdout: &dbuf, Stderr: &dbuf, Yes: true, JSON: true})
+	if code == ExitOK {
+		t.Fatalf("doctor must fail while the ExecStart is overridden:\n%s", dbuf.String())
+	}
+	for _, want := range []string{"fcitx5 启动参数", "override.conf", unit + ".d"} {
+		if !strings.Contains(dbuf.String(), want) {
+			t.Errorf("doctor output must mention %q:\n%s", want, dbuf.String())
+		}
 	}
 }

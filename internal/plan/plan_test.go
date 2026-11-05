@@ -9,10 +9,15 @@ import (
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
 )
 
+// freshCurrent models a fresh Omarchy 4.5+ host: the IM integration is
+// Omarchy's own (bar indicator, no SNI drop-in/pin, no trigger keys, themed by
+// omarchy-theme-set-fcitx5). legacyCurrent() models the pre-4.5 host (Omarchy
+// went straight from 4.0 to 4.5) instead.
 func freshCurrent() *observe.Current {
 	return &observe.Current{
-		Managed:         map[string]patches.Status{},
-		PackagesMissing: []string{"fcitx5"},
+		Managed:           map[string]patches.Status{},
+		PackagesMissing:   []string{"fcitx5"},
+		OmarchyManagesIME: true,
 		// Omarchy ships xwayland force_zero_scaling=true: X11 apps self-scale,
 		// so the Xft.dpi bridge is applicable. Tests that model the compositor
 		// scaling X11 override this to false.
@@ -33,9 +38,9 @@ func TestDiffFreshHost(t *testing.T) {
 			t.Errorf("plan output missing %q:\n%s", want, out)
 		}
 	}
-	// 顶栏图标是必做终态（ADR 12）：pin 缺失 → L4 tray 步骤必须出现
-	if !strings.Contains(out, "pin Fcitx") {
-		t.Errorf("tray pin step missing:\n%s", out)
+	// 4.5+：顶栏是 Omarchy 自己的 widget，步骤只能说「放上 widget + 清残留」
+	if !strings.Contains(out, "omarchy.keyboard-layout") {
+		t.Errorf("bar-indicator step missing:\n%s", out)
 	}
 }
 
@@ -59,14 +64,28 @@ func convergedCurrent() *observe.Current {
 	c.GroupIMs = catalog.DefaultIMs()
 	c.HotkeyOK = true
 	c.AltTriggerOK = true
+	c.DropInExists = false // 4.5+: the drop-in is residue, not terminal state
+	c.DropInOK = false
+	c.PinnedHasFc = false
+	c.BarIndicator = true
+	c.ThemeEqual = true
+	c.ThemeConfOK = true
+	c.ThemeHookOK = false // the hook is retired
+	c.BuildMissing = nil
+	return c
+}
+
+// legacyCurrent is the same snapshot on a pre-4.5 Omarchy: there the tray
+// (notificationitem + pin) and the trigger keys are still ompinyin's.
+func legacyCurrent() *observe.Current {
+	c := convergedCurrent()
+	c.OmarchyManagesIME = false
+	c.HotkeyOK = true
+	c.AltTriggerOK = true
 	c.DropInExists = true
 	c.DropInOK = true // present AND enabling notificationitem for the live unit
 	c.PinnedHasFc = true
-	c.ThemeEqual = true
-	c.ThemeDirOK = true
-	c.ThemeConfOK = true
-	c.ThemeHookOK = true
-	c.BuildMissing = nil
+	c.BarIndicator = false
 	return c
 }
 
@@ -74,13 +93,36 @@ func convergedCurrent() *observe.Current {
 // L1–L4 steps are [跳过].
 func TestDiffConvergedHost(t *testing.T) {
 	d := catalog.DefaultDesired()
-	c := convergedCurrent()
-
-	p := Diff(d, c, false)
-	for _, s := range p.Steps {
-		if s.Layer != "L5" && s.Needed {
-			t.Errorf("converged host: step %s/%s should be skipped", s.Layer, s.Title)
+	for name, c := range map[string]*observe.Current{
+		"omarchy 4.5+": convergedCurrent(),
+		"omarchy 4.0":  legacyCurrent(),
+	} {
+		p := Diff(d, c, false)
+		for _, s := range p.Steps {
+			if s.Layer != "L5" && s.Needed {
+				t.Errorf("%s: converged host step %s/%s should be skipped", name, s.Layer, s.Title)
+			}
 		}
+		if p.NeedsApply() {
+			t.Errorf("%s: a converged host must not need apply", name)
+		}
+	}
+}
+
+// TestDiffLegacyTrayTerminalState: on 4.0 the tray really is ours, so a
+// missing pin/drop-in is still work and the step keeps the old wording.
+func TestDiffLegacyTrayTerminalState(t *testing.T) {
+	c := legacyCurrent()
+	c.DropInOK = false
+	p := Diff(catalog.DefaultDesired(), c, false)
+	if !p.NeedTray || !strings.Contains(p.Describe(), "pin Fcitx") {
+		t.Fatalf("legacy tray drift must be planned:\n%s", p.Describe())
+	}
+	// the retired hook is NOT terminal state there either (convergence retires it)
+	c2 := legacyCurrent()
+	c2.ThemeHookOK = true
+	if q := Diff(catalog.DefaultDesired(), c2, false); !q.NeedTheme {
+		t.Error("a surviving theme hook must count as theming work")
 	}
 }
 
@@ -341,7 +383,7 @@ func TestDiffGroupShapeDriftIsHostWork(t *testing.T) {
 // switching 中英 inside rime. Convergence empties the section; drift = work.
 func TestDiffAltTriggerDriftIsHostWork(t *testing.T) {
 	d := catalog.DefaultDesired()
-	c := convergedCurrent()
+	c := legacyCurrent()
 	c.AltTriggerOK = false
 	c.AltTriggerKeys = []string{"Shift_L"}
 	p := Diff(d, c, false)
@@ -351,5 +393,108 @@ func TestDiffAltTriggerDriftIsHostWork(t *testing.T) {
 	out := p.Describe()
 	if !strings.Contains(out, "清空 [Hotkey/AltTriggerKeys]") || !strings.Contains(out, "Shift_L") {
 		t.Errorf("plan must name the alt-trigger drift:\n%s", out)
+	}
+}
+
+// TestDiffControlSpaceResidueIsHostWork: on 4.5+ the only hotkey drift ompinyin
+// still owns is the chord IT wrote in older versions. Convergence removes it and
+// must say so (the user has to know Ctrl+Space moved back to the terminal).
+func TestDiffControlSpaceResidueIsHostWork(t *testing.T) {
+	d := catalog.DefaultDesired()
+	c := convergedCurrent()
+	c.ControlSpace = true
+	p := Diff(d, c, false)
+	if !p.NeedHost {
+		t.Fatalf("a leftover Control+space must be host work:\n%s", p.Describe())
+	}
+	out := p.Describe()
+	for _, want := range []string{"Control+space", "Super+I"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan must explain the hotkey hand-over (%q):\n%s", want, out)
+		}
+	}
+	// The legacy AltTrigger clause must NOT appear on 4.5: Omarchy writes that
+	// section itself, so claiming we would empty it would be a lie.
+	if strings.Contains(out, "AltTriggerKeys") {
+		t.Errorf("4.5+ plan must not promise AltTriggerKeys work:\n%s", out)
+	}
+}
+
+// TestDiffGroupDriftNamesRemovedEngine: D2 — the group shape stays ours, and the
+// plan must name the engine it removes and how to put it back (the installer's
+// own `pinyin` is the common case), not just "the group drifted".
+func TestDiffGroupDriftNamesRemovedEngine(t *testing.T) {
+	d := catalog.DefaultDesired()
+	c := convergedCurrent()
+	c.GroupIMs = []string{catalog.IMEnglish, "pinyin", catalog.IMRime}
+
+	p := Diff(d, c, false)
+	if !p.NeedHost {
+		t.Fatal("engine surplus must be host work")
+	}
+	out := p.Describe()
+	for _, want := range []string{"pinyin", "移出组", "omarchy setup input pinyin"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan must name the removed engine (%q):\n%s", want, out)
+		}
+	}
+}
+
+// TestDiffBarIndicatorIsTrayWork: on 4.5+ the terminal state is Omarchy's own
+// widget being on the bar — a missing widget or a leftover drop-in/pin is the
+// whole L4 tray step.
+func TestDiffBarIndicatorIsTrayWork(t *testing.T) {
+	d := catalog.DefaultDesired()
+
+	c := convergedCurrent()
+	c.BarIndicator = false
+	p := Diff(d, c, false)
+	if !p.NeedTray {
+		t.Fatal("a missing bar indicator must be tray work")
+	}
+	if out := p.Describe(); !strings.Contains(out, "omarchy.keyboard-layout") || !strings.Contains(out, "清理旧 drop-in/pin") {
+		t.Errorf("plan must describe the 4.5 tray step:\n%s", out)
+	}
+
+	c2 := convergedCurrent()
+	c2.StaleTray = true // artifacts only; the widget is already there
+	if q := Diff(d, c2, false); !q.NeedTray {
+		t.Error("stale pre-4.5 artifacts must be cleaned up")
+	}
+}
+
+// TestDiffLegacyOverrideResidueIsHostWork: the v1.0 generic override.conf
+// rewrites the unit's ExecStart, so fcitx5 keeps publishing its own SNI tray item
+// beside Omarchy's indicator. Like the drop-in it only takes effect on restart →
+// it must open the stop window (tray work alone would never restart the unit).
+func TestDiffLegacyOverrideResidueIsHostWork(t *testing.T) {
+	d := catalog.DefaultDesired()
+	c := convergedCurrent()
+	c.StaleOverride = true
+	c.StaleTray = true
+
+	p := Diff(d, c, false)
+	if !p.NeedHost {
+		t.Fatalf("a leftover override.conf must be host work:\n%s", p.Describe())
+	}
+	if !p.NeedTray {
+		t.Errorf("it is also tray residue:\n%s", p.Describe())
+	}
+	out := p.Describe()
+	for _, want := range []string{"override.conf", "ExecStart", "stop 窗口"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan must explain the override (%q):\n%s", want, out)
+		}
+	}
+	// a residual PIN or hook needs no restart: they must not open the window
+	c2 := convergedCurrent()
+	c2.PinnedHasFc, c2.StaleTray = true, true
+	if q := Diff(d, c2, false); q.NeedHost {
+		t.Error("an SNI pin alone must not open the stop window")
+	}
+	c3 := convergedCurrent()
+	c3.ThemeHookOK, c3.StaleTray = true, true
+	if q := Diff(d, c3, false); q.NeedHost {
+		t.Error("a theme hook alone must not open the stop window")
 	}
 }

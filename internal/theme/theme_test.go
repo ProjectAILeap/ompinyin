@@ -13,8 +13,8 @@ import (
 
 // TestConfContentShape: the managed classicui.conf must be a whole file with
 // the managed header, pointing the panel at the omarchy theme, with the UI
-// font baked in and the accent-portal path disabled (the generated theme
-// carries the colors, so follow-system-accent would fight the hook).
+// font baked in and the accent-portal path disabled (Omarchy's generator
+// carries the colors, so follow-system-accent would fight it).
 func TestConfContentShape(t *testing.T) {
 	s := ConfContent("", "JetBrainsMono Nerd Font")
 	for _, want := range []string{
@@ -30,30 +30,12 @@ func TestConfContentShape(t *testing.T) {
 		}
 	}
 	if strings.Contains(s, "UseDarkTheme=True") {
-		t.Error("UseDarkTheme must not follow the system scheme (hook writes the colors)")
-	}
-}
-
-// TestHookContentShape: the managed hook must be a valid bash script carrying
-// the managed header (a bash `#` comment), the color-mapping markers, and the
-// DBus reload (fcitx5-remote -r would NOT re-read the theme — verified).
-func TestHookContentShape(t *testing.T) {
-	s := HookContent()
-	if !strings.HasPrefix(s, catalog.ManagedHeader()+"\n") {
-		t.Errorf("hook must start with the managed header:\n%s", s[:80])
-	}
-	for _, want := range []string{
-		"set -euo pipefail", "omarchy-theme-color",
-		"HighlightCandidateColor", "ReloadAddonConfig", "classicui",
-	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("hook script missing %q", want)
-		}
+		t.Error("UseDarkTheme must not follow the system scheme (Omarchy generates the colors)")
 	}
 }
 
 // TestObserveTransitions: an empty home reads as not converged; after writing
-// the real files it reads as converged; a hand-edited classicui.conf flips
+// the real file it reads as converged; a hand-edited classicui.conf flips
 // ConfEqual while the header check still sees the right theme name choice.
 func TestObserveTransitions(t *testing.T) {
 	home := t.TempDir()
@@ -63,49 +45,122 @@ func TestObserveTransitions(t *testing.T) {
 	CurrentFont = func() string { return "TestFont" }
 	defer func() { CurrentFont = resetFont }()
 
-	if o := Observe(home, st); o.ConfEqual && o.HookEqual && o.DirOK {
+	if o := Observe(home, st); o.ConfEqual || o.HookOK {
 		t.Error("empty home must not be theme-converged")
 	}
 
-	// converge the files by hand (what themeApply writes)
-	for rel, content := range map[string]string{
-		ConfRelPath: ConfContent("", "TestFont"),
-		HookRelPath: HookContent(),
-	} {
-		abs := filepath.Join(home, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		st.ManagedFiles[rel] = state.HashBytes([]byte(content))
-	}
-	if err := os.MkdirAll(ThemeDir(home), 0o755); err != nil {
+	// converge classicui.conf by hand (what themeApply writes)
+	content := ConfContent("", "TestFont")
+	abs := ConfPath(home)
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ThemeDir(home), "theme.conf"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	st.ManagedFiles[ConfRelPath] = state.HashBytes([]byte(content))
 
 	o := Observe(home, st)
-	if !o.ConfOK || !o.ConfEqual || !o.HookOK || !o.HookEqual || !o.DirOK {
+	if !o.ConfOK || !o.ConfEqual || o.HookOK {
 		t.Errorf("converged theming not detected: %+v", o)
 	}
 
 	// hand edit → ConfEqual flips, header check stays true; the §5.1 classify
 	// reports user-modified so converge will ask before overwriting
-	confAbs := ConfPath(home)
-	os.WriteFile(confAbs, []byte("Theme=default\n"), 0o644)
+	os.WriteFile(abs, []byte("Theme=default\n"), 0o644)
 	o = Observe(home, st)
 	if o.ConfOK || o.ConfEqual {
 		t.Errorf("edited classicui.conf must read as drifted: %+v", o)
 	}
-	if got := patches.Classify(confAbs, st.ManagedFiles[ConfRelPath]); got != patches.StatusUserModified {
+	if got := patches.Classify(abs, st.ManagedFiles[ConfRelPath]); got != patches.StatusUserModified {
 		t.Errorf("edited classicui.conf classified as %v, want user-modified", got)
 	}
-	if got := patches.Classify(HookPath(home), st.ManagedFiles[HookRelPath]); got != patches.StatusManaged {
-		t.Errorf("untouched hook classified as %v, want managed", got)
+}
+
+// TestRetireArtifacts: convergence deletes exactly the files ompinyin's old
+// generator wrote — the hook and its two SVGs — and leaves Omarchy's theme.conf
+// and symlinks alone (a `omarchy theme set` writes them now).
+func TestRetireArtifacts(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, filepath.FromSlash(themeDirRel))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := HookPath(home)
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{hook, filepath.Join(dir, "background.svg"), filepath.Join(dir, "highlight.svg")} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// not ours: Omarchy's generated theme.conf plus a theme symlink
+	keep := []string{filepath.Join(dir, "theme.conf"), filepath.Join(dir, "arrow.svg"), filepath.Join(dir, "current")}
+	for _, p := range keep {
+		if err := os.WriteFile(p, []byte("y"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !ArtifactsPresent(home) {
+		t.Fatal("precondition: retired artifacts must read as present")
+	}
+
+	removed, err := RetireArtifacts(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 3 {
+		t.Errorf("removed = %v, want the hook and the two SVGs", removed)
+	}
+	if ArtifactsPresent(home) {
+		t.Error("artifacts still present after retirement")
+	}
+	for _, p := range keep {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("not-ours file %s was deleted: %v", p, err)
+		}
+	}
+	// idempotent, and a fresh home is a no-op
+	if again, err := RetireArtifacts(home); err != nil || len(again) != 0 {
+		t.Errorf("second call removed=%v err=%v", again, err)
+	}
+	if got, err := RetireArtifacts(t.TempDir()); err != nil || len(got) != 0 {
+		t.Errorf("empty home removed=%v err=%v", got, err)
+	}
+}
+
+// TestApplyUpstream: the theme is handed to Omarchy's own generator; a host
+// without it (pre-4.5) yields the ignorable ErrNoUpstream instead of an exec.
+func TestApplyUpstream(t *testing.T) {
+	resetLook, resetRun := LookPath, Run
+	defer func() { LookPath, Run = resetLook, resetRun }()
+
+	var calls [][]string
+	Run = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+
+	LookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	if err := ApplyUpstream(); err != ErrNoUpstream {
+		t.Errorf("missing generator must yield ErrNoUpstream, got %v", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("nothing may be exec'd without the script: %v", calls)
+	}
+
+	LookPath = func(string) (string, error) { return "/usr/bin/omarchy-theme-set-fcitx5", nil }
+	if err := ApplyUpstream(); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || len(calls[0]) != 2 || calls[0][1] != "--activate" {
+		t.Errorf("unexpected exec: %v", calls)
+	}
+	// a failing generator is reported (converge downgrades it to a note)
+	Run = func(string, ...string) error { return os.ErrPermission }
+	if err := ApplyUpstream(); err == nil || err == ErrNoUpstream {
+		t.Errorf("generator failure must surface, got %v", err)
 	}
 }
 

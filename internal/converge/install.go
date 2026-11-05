@@ -12,6 +12,7 @@ package converge
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ProjectAILeap/ompinyin/internal/assets"
+	"github.com/ProjectAILeap/ompinyin/internal/bar"
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/deploy"
 	"github.com/ProjectAILeap/ompinyin/internal/facts"
@@ -180,6 +182,13 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 		return ExitExecFail
 	}
 	cur := observe.Collect(d, st)
+	// D2: a group without any keyboard-* item is legal for fcitx5 but breaks
+	// Omarchy 4.5+ (its Setup > Typing > Input Methods errors out and the bar
+	// indicator stays empty). The flag is kept for scripts, the warning is new.
+	if cur.OmarchyManagesIME && !hasKeyboardIM(d.IMsOrDefault()) {
+		opts.errf("[警告] 输入法组 [%s] 里没有 keyboard-* 输入法：Omarchy 的 Setup > Typing > Input Methods 会报错、顶栏输入法指示器不显示（--single-im 仅为脚本兼容保留）",
+			strings.Join(d.IMsOrDefault(), " "))
+	}
 	// A channel change is a change of terminal state, so it must refresh L2 just
 	// like `update` does — otherwise the old build's bytes would be kept while
 	// the ledger records the new channel.
@@ -362,14 +371,14 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 		}
 	}
 
-	// ---- L4 tray pin: read → merge → set (ADR 13) ----
-	if code := traySet(opts, backupDir); code != ExitOK {
+	// ---- L4 tray / bar indicator (+ pre-4.5 artifact cleanup) ----
+	if code := trayTerminal(opts, backupDir, cur, p.NeedTray); code != ExitOK {
 		return code
 	}
 
-	// ---- L4 candidate-window theming (§6.6): classicui.conf + theme-set hook
-	// + generate now + hot reload. Outside the stop window: fcitx5 reads these
-	// without a restart (ReloadAddonConfig), unlike profile/hotkey/drop-in. ----
+	// ---- L4 candidate-window theming (§6.6): classicui.conf (ours) + hand the
+	// colors back to omarchy-theme-set-fcitx5 + retire our old hook/SVGs + hot
+	// reload. Outside the stop window: fcitx5 reads these without a restart. ----
 	if code := themeApply(opts, backupDir, st); code != ExitOK {
 		return code
 	}
@@ -425,9 +434,25 @@ func Install(d catalog.Desired, forceRefetch bool, opts Options) int {
 	} else if len(removed) > 0 {
 		opts.outf("[完成] 已清理 %d 个旧备份（保留最近 %d 个）", len(removed), state.LedgerKeepBackups)
 	}
-	opts.outf("[完成] 终态收敛完成；%s 切方案，%s 在 IM 组内切英文键盘，Shift 切中英（rime 内）",
-		strings.Join(catalog.SwitcherHotkeys, " / "), strings.Join(hotkey.DefaultKeys, " / "))
+	if cur.OmarchyManagesIME {
+		opts.outf("[完成] 终态收敛完成；Super+I 循环输入法、左 Shift 进出输入法（均由 Omarchy 提供）；%s 切方案",
+			strings.Join(catalog.SwitcherHotkeys, " / "))
+	} else {
+		opts.outf("[完成] 终态收敛完成；%s 切方案，%s 在 IM 组内切英文键盘，Shift 切中英（rime 内）",
+			strings.Join(catalog.SwitcherHotkeys, " / "), strings.Join(hotkey.DefaultKeys, " / "))
+	}
 	return ExitOK
+}
+
+// hasKeyboardIM reports whether the group carries an XKB layout item — the one
+// thing Omarchy 4.5+ expects to find next to rime.
+func hasKeyboardIM(ims []string) bool {
+	for _, im := range ims {
+		if strings.HasPrefix(im, "keyboard-") {
+			return true
+		}
+	}
+	return false
 }
 
 func requiredPackages(d catalog.Desired, cur *observe.Current) []string {
@@ -506,20 +531,54 @@ func runStopWindow(opts Options, backupDir string, cur *observe.Current, d catal
 			opts.errf("[失败] L4 profile：%v", err)
 			return ExitExecFail
 		}
-		if err := writeHotkey(opts, backupDir); err != nil {
-			opts.errf("[失败] L4 hotkey：%v", err)
-			return ExitExecFail
-		}
-		created, err := tray.WriteDropIn(state.Home(), unit, deriveDropIn(unit))
-		if err != nil {
-			opts.errf("[失败] L4 drop-in：%v", err)
-			return ExitExecFail
-		}
-		if created {
-			// 注：已有 drop-in 的原始内容已在 obackup 阶段快照（先备份后写）
-			opts.outf("[完成] L4 notificationitem 专用 drop-in 已写入")
+		if cur.OmarchyManagesIME {
+			// 4.5+ owns the hotkeys: we only take our old chords back out.
+			if err := cleanupHotkey(opts, backupDir); err != nil {
+				opts.errf("[失败] L4 热键：%v", err)
+				return ExitExecFail
+			}
+			// The pre-4.5 drop-in re-enabled fcitx5's own SNI item. Deleting the
+			// file is not enough: the RUNNING instance was started with the drop-in
+			// applied, so it keeps publishing the duplicate icon until the unit
+			// restarts — i.e. the removal has to happen HERE, inside the window,
+			// before daemon-reload + the deferred start.
+			if err := tray.RemoveDropIn(state.Home(), unit); err != nil {
+				opts.errf("[失败] L4 移除旧 notificationitem drop-in：%v", err)
+				return ExitExecFail
+			}
+			if cur.DropInExists {
+				opts.outf("[完成] L4 已移除旧的 notificationitem drop-in（重启后 fcitx5 不再发第二个托盘图标）")
+			} else {
+				opts.outf("[跳过] L4 无旧 notificationitem drop-in 残留")
+			}
+			// v1.0 wrote a GENERIC override.conf (no managed header), so it can only
+			// be recognised by content. It replaces the unit's ExecStart, which is
+			// what keeps fcitx5 publishing its own tray item next to Omarchy's
+			// indicator — its removal has to happen inside this window too.
+			if cur.StaleOverride {
+				if err := removeLegacyOverride(opts, backupDir, unit); err != nil {
+					opts.errf("[失败] L4 移除旧 override.conf：%v", err)
+					return ExitExecFail
+				}
+			} else {
+				opts.outf("[跳过] L4 无旧 override.conf 残留")
+			}
 		} else {
-			opts.outf("[跳过] L4 notificationitem drop-in 已是目标内容")
+			if err := writeHotkey(opts, backupDir); err != nil {
+				opts.errf("[失败] L4 hotkey：%v", err)
+				return ExitExecFail
+			}
+			created, err := tray.WriteDropIn(state.Home(), unit, deriveDropIn(unit))
+			if err != nil {
+				opts.errf("[失败] L4 drop-in：%v", err)
+				return ExitExecFail
+			}
+			if created {
+				// 注：已有 drop-in 的原始内容已在 obackup 阶段快照（先备份后写）
+				opts.outf("[完成] L4 notificationitem 专用 drop-in 已写入")
+			} else {
+				opts.outf("[跳过] L4 notificationitem drop-in 已是目标内容")
+			}
 		}
 	}
 	if hidpiNeeded {
@@ -1069,7 +1128,116 @@ func writeHotkey(opts Options, backupDir string) error {
 	return nil
 }
 
-// traySet performs step B: read pinned → merge Fcitx → one `bar set`.
+// removeLegacyOverride backs up then deletes the generic override.conf when its
+// content is one ompinyin itself wrote (v1.0's literal body, or a derived body).
+// A user-authored override is left alone — verify reports it instead.
+func removeLegacyOverride(opts Options, backupDir, unit string) error {
+	home := state.Home()
+	derived := tray.DerivedDropInBody(home, unit)
+	path := tray.LegacyOverridePath(home, unit)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !tray.LegacyOverrideMatches(string(b), derived) {
+		opts.errf("[警告] L4 %s 是自定义内容，不删除；它会覆盖 Omarchy 的 ExecStart（见 doctor 的「fcitx5 启动参数」）", path)
+		return nil
+	}
+	// §5.1: snapshot before deleting, then delete (same window, same order).
+	if err := copyToBackup(backupDir, path); err != nil {
+		return err
+	}
+	removed, err := tray.RemoveLegacyOverride(home, unit, derived)
+	if err != nil {
+		return err
+	}
+	if removed {
+		opts.outf("[完成] L4 已移除 v1.0 的 override.conf（它覆盖了 Omarchy 的 ExecStart）；重启后 fcitx5 恢复 --replace --disable notificationitem，不再自建托盘图标")
+	}
+	return nil
+}
+
+// trayTerminal converges the L4 tray terminal state. Omarchy 4.5+ renders the IM
+// indicator itself, so there the work is "make sure the widget is on the bar" plus
+// "delete the SNI pin the pre-4.5 path created" (the old drop-in is deleted inside
+// the stop window instead — see runStopWindow). Everything here is idempotent.
+// Pre-4.5 hosts keep the old two-step (enable notificationitem + pin).
+func trayTerminal(opts Options, backupDir string, cur *observe.Current, needWork bool) int {
+	if !cur.OmarchyManagesIME {
+		return traySet(opts, backupDir) // the legacy pin write needs the §5.1 backup
+	}
+	if needWork {
+		if err := bar.EnsureIndicator(); err != nil {
+			// The indicator is Omarchy's widget: use the shell's own command and
+			// never fail the run over a shell that is not running (its default
+			// config already carries the widget — docs/dev-notes.md P10).
+			opts.errf("[提示] L4 顶栏指示器：%v（可手动 `omarchy bar put %s`）", err, bar.WidgetID)
+		} else {
+			opts.outf("[完成] L4 顶栏输入法指示器在 bar 上（%s）", bar.WidgetID)
+		}
+	}
+	// Only the SNI pin is removed here: it needs no restart (the shell's FileView
+	// reloads shell.json). The old drop-in is removed INSIDE the stop window —
+	// removing it out here would leave the running fcitx5 publishing the
+	// duplicate icon until the next login (trayTerminal is called after
+	// runStopWindow). Idempotent; obackup already snapshotted shell.json.
+	if _, err := tray.RemovePinned(tray.ShellJSONPath(state.Home())); err != nil {
+		opts.errf("[警告] L4 移除旧 Fcitx pin：%v", err)
+	}
+	if cur.PinnedHasFc {
+		opts.outf("[完成] L4 已移除旧的 Fcitx pin（顶栏指示器归 Omarchy，不再重复显示）")
+	} else {
+		opts.outf("[跳过] L4 无旧 Fcitx pin 残留")
+	}
+	return ExitOK
+}
+
+// cleanupHotkey is the 4.5+ hotkey step: Omarchy owns the IM hotkeys
+// (`TriggerKeys=Zenkaku_Hankaku/Hangul`, `AltTriggerKeys=0=Shift_L`, `Super+I`
+// cycles, and configure.py deletes anything else on every `--defaults`), so the
+// only drift ompinyin still owns is the chord IT wrote: Control+space (and the
+// historical Alt+space). One read → one write → one backup, and the
+// [Hotkey/AltTriggerKeys] section is NEVER touched (upstream keeps rewriting it).
+func cleanupHotkey(opts Options, backupDir string) error {
+	p := observe.ConfigPath()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			opts.outf("[跳过] L4 无 [Hotkey/TriggerKeys] 残留")
+			return nil
+		}
+		return err
+	}
+	content := string(b)
+	var removed []string
+	for _, k := range hotkey.LegacyTriggerKeys {
+		var keyChanged bool
+		content, keyChanged, err = hotkey.RemoveTriggerKey(content, k)
+		if err != nil {
+			return err
+		}
+		if keyChanged {
+			removed = append(removed, k)
+		}
+	}
+	if len(removed) == 0 {
+		opts.outf("[跳过] L4 触发键已归 Omarchy（无 Control+space 残留）")
+		return nil
+	}
+	if err := copyToBackup(backupDir, p); err != nil {
+		return fmt.Errorf("backup %s: %w", p, err)
+	}
+	if err := state.WriteAtomic(p, []byte(content)); err != nil {
+		return err
+	}
+	opts.outf("[完成] L4 已移除 [Hotkey/TriggerKeys] 中的 %s（触发键归 Omarchy：Super+I 循环、左 Shift 进出输入法、Ctrl+Space 留给终端）", strings.Join(removed, " / "))
+	return nil
+}
+
+// traySet is the pre-4.5 step B: read pinned → merge Fcitx → one `bar set`.
 func traySet(opts Options, backupDir string) int {
 	shellJSON := tray.ShellJSONPath(state.Home())
 	b, err := os.ReadFile(shellJSON)
@@ -1114,25 +1282,34 @@ func traySet(opts Options, backupDir string) int {
 // L4 candidate-window theming (§6.6)
 // ---------------------------------------------------------------------------
 
-// themeApply converges the candidate-window theming terminal state:
-// classicui.conf + theme-set hook (both ledger-tracked, §5.1 ownership
-// protocol), immediate generation from the current Omarchy theme, and a DBus
-// hot reload of the classicui addon. It never touches the stop window: fcitx5
-// reads these files on reload, no restart needed.
+// themeApply converges the candidate-window theming terminal state after the
+// 4.5 hand-over: classicui.conf is still ours (key-scoped, §5.1), the colors and
+// the theme directory are Omarchy's (`omarchy-theme-set-fcitx5`), and our old
+// generator's artifacts are retired — the two writers raced on the same files
+// (docs/dev-notes.md P10). Never touches the stop window: fcitx5 re-reads these
+// on reload.
 func themeApply(opts Options, backupDir string, st *state.State) int {
 	home := state.Home()
 	confContent := theme.ConfContent(theme.ReadConfContent(home), theme.CurrentFont())
-	hookContent := theme.HookContent()
 
-	// converged already: skip (also keeps a reconverged re-run a true no-op)
-	if b, err := os.ReadFile(theme.ConfPath(home)); err == nil && string(b) == confContent {
-		if hb, err := os.ReadFile(theme.HookPath(home)); err == nil && string(hb) == hookContent {
-			if theme.ThemeDirPopulated(home) {
-				opts.outf("[跳过] L4 候选框已跟随 Omarchy 主题")
-				return ExitOK
-			}
-		}
+	// converged already: skip (also keeps a re-run a true no-op, DBus reload
+	// included)
+	if b, err := os.ReadFile(theme.ConfPath(home)); err == nil && string(b) == confContent && !theme.ArtifactsPresent(home) {
+		opts.outf("[跳过] L4 候选框已跟随 Omarchy 主题")
+		return ExitOK
 	}
+
+	// Retire BEFORE the upstream generator runs, so it can (re)write its own
+	// files. Only what ompinyin used to generate: theme.conf and Omarchy's
+	// symlinks stay.
+	if removed, err := theme.RetireArtifacts(home); err != nil {
+		opts.errf("[警告] L4 清理旧候选框主题产物：%v", err)
+	} else if len(removed) > 0 {
+		opts.outf("[完成] L4 已移除旧的 theme-set 钩子与候选框 SVG（配色归 omarchy-theme-set-fcitx5）")
+	}
+	// The hook is no longer part of the terminal state: drop its ledger entry, or
+	// every later classify/uninstall would look for a file we deliberately retired.
+	delete(st.ManagedFiles, theme.HookRelPath)
 
 	changed, code := writeThemeFile(opts, backupDir, st, theme.ConfPath(home), theme.ConfRelPath, confContent, "classicui.conf", 0)
 	if code != ExitOK {
@@ -1141,16 +1318,17 @@ func themeApply(opts Options, backupDir string, st *state.State) int {
 	if changed {
 		opts.outf("[完成] L4 classicui.conf → Theme=%s", theme.ThemeName)
 	}
-	if _, code := writeThemeFile(opts, backupDir, st, theme.HookPath(home), theme.HookRelPath, hookContent, "theme-set 钩子 (fcitx5-theme)", 0o755); code != ExitOK {
-		return code
-	}
 
-	// 立即按当前 Omarchy 主题生成（首次安装/目录缺失/换主题后未触发钩子时；幂等）
-	if err := theme.Generate(home); err != nil {
-		opts.errf("[失败] L4 候选框主题生成：%v", err)
-		return ExitExecFail
+	// Hand the colors over to Omarchy. A host without the script (pre-4.5) has
+	// nothing to hand over: classicui then names a theme that does not exist and
+	// fcitx5 falls back to its default look — a note, never a failure.
+	if err := theme.ApplyUpstream(); err != nil {
+		if !errors.Is(err, theme.ErrNoUpstream) {
+			opts.errf("[提示] L4 生成候选框主题失败（候选框会回落到默认外观）：%v", err)
+		}
+	} else {
+		opts.outf("[完成] L4 候选框主题已交给 omarchy-theme-set-fcitx5")
 	}
-	opts.outf("[完成] L4 候选框主题已按当前 Omarchy 主题生成")
 
 	// the ownership/hashes describe bytes on disk now — persist before the reload
 	saveLedger(opts, st)
@@ -1211,7 +1389,7 @@ func writeThemeFile(opts Options, backupDir string, st *state.State, abs, rel, c
 func obackup(opts Options, d catalog.Desired, cur *observe.Current, st *state.State, p *plan.Plan) (string, error) {
 	var targets []string
 	if opts.FullBackup {
-		targets = append(targets, cur.RimeDir, observe.FcitxConfigDir(), tray.ShellJSONPath(state.Home()), theme.ThemeDir(state.Home()))
+		targets = append(targets, cur.RimeDir, observe.FcitxConfigDir(), tray.ShellJSONPath(state.Home()))
 	} else if p.NeedsApply() {
 		for rel, status := range cur.Managed {
 			if status == patches.StatusUserModified || status == patches.StatusForeign {

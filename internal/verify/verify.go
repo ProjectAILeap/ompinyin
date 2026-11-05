@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ProjectAILeap/ompinyin/internal/bar"
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/hotkey"
 	"github.com/ProjectAILeap/ompinyin/internal/observe"
@@ -63,18 +64,31 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 			out = append(out, Check{Name: "IM 三态", OK: false, Detail: "fcitx5-remote 不可用: " + err.Error()})
 		} else {
 			what := map[int]string{0: "未激活", 1: "英文", 2: "中文"}[n]
-			out = append(out, Check{Name: "IM 三态", OK: true, Detail: fmt.Sprintf("fcitx5-remote=%d（%s）；往返切换用触发键", n, what)})
+			detail := fmt.Sprintf("fcitx5-remote=%d（%s）", n, what)
+			if c.OmarchyManagesIME {
+				detail += "；切换用 Super+I（循环）或左 Shift（进出输入法）"
+			} else {
+				detail += "；往返切换用触发键"
+			}
+			out = append(out, Check{Name: "IM 三态", OK: true, Detail: detail})
 		}
 	}
 
 	// 3b. the group SHAPE (fcitx5 gates every IM hotkey on len(items) > 1)
 	out = append(out, checkGroupIMs(d, c))
 
-	// 4. tray visible: drop-in + pinned
-	out = append(out, Check{Name: "托盘 drop-in", OK: c.DropInOK,
-		Detail: dropInDetail(c)})
-	out = append(out, Check{Name: "托盘 pin", OK: c.PinnedHasFc,
-		Detail: map[bool]string{true: "omarchy.tray.pinned 含 Fcitx", false: "omarchy.tray.pinned 不含 Fcitx"}[c.PinnedHasFc]})
+	// 4. tray/indicator. Omarchy 4.5+ renders the IM indicator itself, so the only
+	// thing ompinyin can check (and clean) is that the widget is on the bar; the
+	// legacy path created a notificationitem drop-in plus an SNI pin.
+	if c.OmarchyManagesIME {
+		out = append(out, checkBarIndicator(c))
+		out = append(out, checkExecStart(c))
+	} else {
+		out = append(out, Check{Name: "托盘 drop-in", OK: c.DropInOK,
+			Detail: dropInDetail(c)})
+		out = append(out, Check{Name: "托盘 pin", OK: c.PinnedHasFc,
+			Detail: map[bool]string{true: "omarchy.tray.pinned 含 Fcitx", false: "omarchy.tray.pinned 不含 Fcitx"}[c.PinnedHasFc]})
+	}
 	if !d.X11HiDPI {
 		out = append(out, Check{Name: "X11 HiDPI（可选）", OK: true, Detail: x11OptionalDetail(c)})
 	} else if !c.X11ForceZeroScaling {
@@ -96,15 +110,18 @@ func TerminalState(d catalog.Desired, c *observe.Current) []Check {
 
 // checkGroupIMs asserts the fcitx5 group's item list matches Desired.IMs. The
 // shape is not cosmetic: fcitx5 gates every IM hotkey on len(items) > 1, so one
-// stale item (the "keyboard-us" old versions created) flips Ctrl+Space and left
-// Shift from inert to live — and then AltTriggerKeys steals left Shift from rime.
+// stale item (the "keyboard-us" old versions created, or the installer's own
+// `pinyin`) changes what the IM hotkeys do and which IM they land on.
 func checkGroupIMs(d catalog.Desired, c *observe.Current) Check {
 	want := d.IMsOrDefault()
 	if catalog.SameIMs(c.GroupIMs, want) {
 		detail := "[" + strings.Join(want, " ") + "]"
-		if len(want) == 1 {
+		switch {
+		case c.OmarchyManagesIME:
+			detail += "；组形状与声明一致（Omarchy 的 Super+I / 左 Shift 在此组内动作）"
+		case len(want) == 1:
 			detail += "；单 IM：fcitx5 的 IM 热键全部失效（canTrigger 要求 >1），中英靠 rime 的 Shift"
-		} else {
+		default:
 			detail += "；Ctrl+Space 在此两项间切换，中英在 rime 内由 Shift 完成"
 		}
 		return Check{Name: "输入法组", OK: true, Detail: detail}
@@ -113,8 +130,17 @@ func checkGroupIMs(d catalog.Desired, c *observe.Current) Check {
 	if len(c.GroupIMs) > 0 {
 		have = strings.Join(c.GroupIMs, " ")
 	}
+	why := "组内 IM 的数量与顺序决定了 fcitx5 能不能动作：>1 个时触发键/AltTrigger 才生效，并会与 rime 抢左 Shift"
+	if c.OmarchyManagesIME {
+		why = "组内 IM 的数量与顺序决定了 Omarchy 的热键能不能动作（>1 个才轮到快捷键）"
+	}
+	hint := ""
+	if removed := catalog.RemovedIMs(c.GroupIMs, want); len(removed) > 0 {
+		// D2: the engine and its package stay — only the group loses it.
+		hint = "；未声明的引擎会被移出组（引擎与包保留，`omarchy setup input " + removed[0] + "` 可加回）"
+	}
 	return Check{Name: "输入法组", OK: false,
-		Detail: fmt.Sprintf("现为 [%s]，终态 [%s]（组内 IM 的数量与顺序决定了 fcitx5 能不能动作：>1 个时触发键/AltTrigger 才生效，并会与 rime 抢左 Shift）—— 重跑 ompinyin install", have, strings.Join(want, " "))}
+		Detail: fmt.Sprintf("现为 [%s]，终态 [%s]（%s）%s —— 重跑 ompinyin install", have, strings.Join(want, " "), why, hint)}
 }
 
 // serviceDownDetail explains a stopped fcitx5 with an actionable remedy. Two
@@ -166,21 +192,80 @@ func x11OptionalDetail(c *observe.Current) string {
 		c.X11Scale, c.X11DPIDesired, residual, c.X11UnitExecNote())
 }
 
-// themeCheck reports whether the candidate window follows the Omarchy theme:
-// classicui.conf points at the omarchy theme, the theme-set hook is installed
-// (so theme changes stay applied), and the generated theme dir is in place.
+// checkBarIndicator asserts Omarchy 4.5+'s own IM indicator is on the bar. It is
+// a separate row from the terminal-state audit's other checks because the fix is
+// a shell command, not a file ompinyin owns.
+//
+// A shell that is NOT running cannot be converged (bar put needs a live shell) and
+// its default config already carries the widget, so "absent + no shell" is not a
+// failure — reporting one would be a red nothing can clear until login.
+func checkBarIndicator(c *observe.Current) Check {
+	stale := ""
+	if c.StaleTray {
+		stale = "；检测到旧产物（notificationitem drop-in / Fcitx pin / theme-set 钩子 / v1.0 override.conf），下次收敛会清理"
+	}
+	if c.BarIndicator {
+		return Check{Name: "顶栏输入法指示器", OK: true,
+			Detail: "omarchy.keyboard-layout 在 bar 上（由 Omarchy 自己渲染）" + stale}
+	}
+	if !c.ShellRunning {
+		return Check{Name: "顶栏输入法指示器", OK: true,
+			Detail: "外壳未运行，无法确认顶栏指示器（Omarchy 默认配置已含该 widget，可用 `omarchy bar put " +
+				bar.WidgetID + "` 确认）" + stale}
+	}
+	return Check{Name: "顶栏输入法指示器", OK: false,
+		Detail: "bar 上没有 " + bar.WidgetID + " —— 运行 `omarchy bar put " + bar.WidgetID +
+			"`（或 ompinyin install）" + stale}
+}
+
+// checkExecStart asserts the EFFECTIVE unit ExecStart keeps Omarchy's
+// `--disable notificationitem`. Reading the unit file would not be enough: any
+// drop-in can rewrite ExecStart — the v1.0 generic override.conf did exactly that
+// with no managed header — and then fcitx5 publishes its own SNI item, so the bar
+// shows two input-method icons. 4.5+ only: the pre-4.5 path removes that flag on
+// purpose.
+func checkExecStart(c *observe.Current) Check {
+	if c.ExecStartOK {
+		return Check{Name: "fcitx5 启动参数", OK: true,
+			Detail: "生效的 ExecStart 保留 Omarchy 的 --disable notificationitem（fcitx5 不自建托盘项，顶栏只由 Omarchy 渲染）"}
+	}
+	dir := "$HOME/.config/systemd/user/"
+	if c.Unit != "" {
+		dir += c.Unit + ".d/"
+	}
+	detail := "某个 drop-in 覆盖了 Omarchy 的 ExecStart（缺 --disable notificationitem）：fcitx5 会自己发托盘图标，" +
+		"与顶栏指示器重复（两个图标）——检查 " + dir + "（v1.0 的 override.conf 就是这种内容，ompinyin install 会删掉" +
+		"自己写过的；自定义的需你手动处理）"
+	if c.EffectiveExecStart != "" {
+		detail += "；当前生效值：" + truncateDetail(c.EffectiveExecStart, 160)
+	}
+	return Check{Name: "fcitx5 启动参数", OK: false, Detail: detail}
+}
+
+// truncateDetail shortens a raw `systemctl show` line for the doctor output.
+func truncateDetail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// themeCheck reports whether the candidate window follows the Omarchy theme.
+// classicui.conf is the only file ompinyin still owns: the colors come from
+// Omarchy's own generator (fcitx5-theme.conf.tpl → omarchy-theme-set-fcitx5), so
+// the old theme-set hook counts as residue, not as part of the terminal state.
 func themeCheck(c *observe.Current) Check {
-	ok := c.ThemeConfOK && c.ThemeHookOK && c.ThemeDirOK
+	ok := c.ThemeConfOK && !c.ThemeHookOK
 	var detail string
 	switch {
 	case !c.ThemeConfOK:
 		detail = "classicui.conf 未指向 " + theme.ThemeName + " 主题（或缺少 managed 头）——候选框不会跟随 Omarchy 配色"
-	case !c.ThemeHookOK:
-		detail = "theme-set 钩子缺失——换 Omarchy 主题后候选框不会自动刷新"
-	case !c.ThemeDirOK:
-		detail = "候选框主题目录未生成（重跑 ompinyin install，或用 omarchy theme set 触发钩子）"
+	case c.ThemeHookOK:
+		detail = "检测到旧 theme-set 钩子残留——重跑 ompinyin install 清理（配色已归 omarchy-theme-set-fcitx5，两者会并发写同一目录）"
+	case c.OmarchyManagesIME:
+		detail = "classicui.conf→omarchy；配色由 Omarchy 的 omarchy-theme-set-fcitx5 生成（换主题自动刷新）"
 	default:
-		detail = "classicui.conf→omarchy；钩子已装；主题目录已生成"
+		detail = "classicui.conf→omarchy；钩子已退役（配色依赖 Omarchy 的 fcitx5 主题生成器）"
 	}
 	return Check{Name: "候选框主题", OK: ok, Detail: detail}
 }
@@ -220,11 +305,11 @@ func checkGrammarCompiled(d catalog.Desired, c *observe.Current) Check {
 	return Check{Name: "grammar 编入", OK: true, Detail: detail}
 }
 
-// triggerDetail states what the trigger key can actually do on this host.
-// fcitx5 gates trigger/activate/deactivate on canTrigger() == group items > 1,
-// so with the single-IM shape the chord is inert — claiming "开/停用输入法"
-// there would be a false green (真机 2026-11-03 抓到的正是这句).
+// triggerDetail states what the trigger key situation is on this host.
 func triggerDetail(d catalog.Desired, c *observe.Current) string {
+	if c.OmarchyManagesIME {
+		return "触发键归 Omarchy：`Super+I` 循环输入法、左 Shift 进出输入法；Ctrl+Space 留给终端"
+	}
 	keys := strings.Join(hotkey.DefaultKeys, " / ")
 	ims := d.IMsOrDefault()
 	if len(ims) > 1 {
@@ -263,17 +348,22 @@ func Doctor(d catalog.Desired, c *observe.Current) []Check {
 	ok, detail := checkEnvRedLine()
 	out = append(out, Check{Name: "环境变量红线", OK: ok, Detail: detail})
 
-	// trigger keys
-	if c.HotkeyOK {
+	// trigger keys: 4.5+ they belong to Omarchy, and the only drift ompinyin still
+	// owns is a leftover Control+space from an older run.
+	if c.OmarchyManagesIME {
+		out = append(out, Check{Name: "触发键", OK: !c.ControlSpace, Detail: triggerDetail(d, c)})
+	} else if c.HotkeyOK {
 		out = append(out, Check{Name: "触发键", OK: true,
 			Detail: triggerDetail(d, c) + c.HerdrNote()})
 	} else {
 		out = append(out, Check{Name: "触发键", OK: false,
 			Detail: "[Hotkey/TriggerKeys] 未达目标值（期望 " + strings.Join(hotkey.DefaultKeys, " / ") + "）" + c.HerdrNote()})
 	}
-	// AltTriggerKeys: fcitx5's shipped Shift_L would compete with rime's
-	// ascii_composer for the same key as soon as the group has >1 IM.
-	out = append(out, checkAltTrigger(c))
+	// AltTriggerKeys: only the pre-4.5 path configures it. Omarchy 4.5+ writes
+	// Shift_L there itself, so asserting it would be a check that passes by luck.
+	if !c.OmarchyManagesIME {
+		out = append(out, checkAltTrigger(c))
+	}
 
 	// managed feel: the full_shape reset is written by INDEX
 	// (switches/@4/reset), so an upstream switch reorder would silently reset a

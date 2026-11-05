@@ -226,17 +226,25 @@ type StepReport struct {
 // HostReport is the observed snapshot, narrowed to what a script may care
 // about (the full observe.Current is an internal shape).
 type HostReport struct {
-	RimeDir            string   `json:"rimeDir"`
-	Unit               string   `json:"unit"`
-	ServiceActive      bool     `json:"serviceActive"`
-	PackagesMissing    []string `json:"packagesMissing,omitempty"`
-	RimeDataExists     bool     `json:"rimeDataExists"`
-	GramFileExists     bool     `json:"gramFileExists"`
-	ProfileHasRime     bool     `json:"profileHasRime"`
-	GroupIMs           []string `json:"groupIMs,omitempty"`
-	HotkeyOK           bool     `json:"hotkeyOK"`
-	AltTriggerKeys     []string `json:"altTriggerKeys,omitempty"`
-	AltTriggerOK       bool     `json:"altTriggerOK"`
+	RimeDir         string   `json:"rimeDir"`
+	Unit            string   `json:"unit"`
+	ServiceActive   bool     `json:"serviceActive"`
+	PackagesMissing []string `json:"packagesMissing,omitempty"`
+	RimeDataExists  bool     `json:"rimeDataExists"`
+	GramFileExists  bool     `json:"gramFileExists"`
+	ProfileHasRime  bool     `json:"profileHasRime"`
+	GroupIMs        []string `json:"groupIMs,omitempty"`
+	HotkeyOK        bool     `json:"hotkeyOK"`
+	AltTriggerKeys  []string `json:"altTriggerKeys,omitempty"`
+	AltTriggerOK    bool     `json:"altTriggerOK"`
+	// BarIndicator: Omarchy 4.5+ renders the IM indicator itself, so the tray
+	// terminal state is "the widget is on the bar", not a drop-in/pin.
+	BarIndicator bool `json:"barIndicator"`
+	// StaleTrayArtifacts: 4.5+ only — the pre-4.5 drop-in / Fcitx pin / theme-set
+	// hook are still installed and the next convergence deletes them.
+	StaleTrayArtifacts bool `json:"staleTrayArtifacts"`
+	// Deprecated on Omarchy 4.5+ (where they mean "residue", not "terminal
+	// state"): use barIndicator / staleTrayArtifacts there.
 	DropInOK           bool     `json:"dropInOK"`
 	PinnedHasFcitx     bool     `json:"pinnedHasFcitx"`
 	StrayFcitx         bool     `json:"strayFcitx"`
@@ -283,18 +291,37 @@ func stepsOf(p *plan.Plan) []StepReport {
 	return out
 }
 
+// hotkeyOK / altTriggerOK keep their pre-4.5 meaning for the legacy path. On
+// 4.5+ Omarchy owns both hotkey lists, so their old predicates ("TriggerKeys has
+// our Control+space", "AltTriggerKeys is an empty section") are false by
+// DESIGN — reporting that as false next to needsApply:false would look like
+// drift to a script. There the honest reading is "no legacy chord left" and
+// "the list is upstream's to own".
+func hotkeyOK(c *observe.Current) bool {
+	if c.OmarchyManagesIME {
+		return !c.ControlSpace
+	}
+	return c.HotkeyOK
+}
+
+func altTriggerOK(c *observe.Current) bool {
+	return c.OmarchyManagesIME || c.AltTriggerOK
+}
+
 func hostReportOf(c *observe.Current) HostReport {
 	return HostReport{
 		RimeDir: c.RimeDir, Unit: c.Unit, ServiceActive: c.ServiceActive,
 		PackagesMissing: c.PackagesMissing, RimeDataExists: c.RimeDataExists,
 		GramFileExists: c.GramFileExists, ProfileHasRime: c.ProfileHasRime,
-		GroupIMs: c.GroupIMs, AltTriggerKeys: c.AltTriggerKeys, AltTriggerOK: c.AltTriggerOK,
-		HotkeyOK: c.HotkeyOK, DropInOK: c.DropInOK, PinnedHasFcitx: c.PinnedHasFc,
-		StrayFcitx:    c.StrayFcitx,
-		ShellRunning:  c.ShellRunning,
-		ThemeOK:       c.ThemeConfOK && c.ThemeHookOK && c.ThemeDirOK,
-		BuildMissing:  c.BuildMissing,
-		OrphanManaged: c.Orphans, LegacyDirExists: c.LegacyDirExists,
+		GroupIMs: c.GroupIMs, AltTriggerKeys: c.AltTriggerKeys, AltTriggerOK: altTriggerOK(c),
+		HotkeyOK: hotkeyOK(c), DropInOK: c.DropInOK, PinnedHasFcitx: c.PinnedHasFc,
+		BarIndicator:       c.BarIndicator,
+		StaleTrayArtifacts: c.StaleTray,
+		StrayFcitx:         c.StrayFcitx,
+		ShellRunning:       c.ShellRunning,
+		ThemeOK:            c.ThemeConfOK && !c.ThemeHookOK,
+		BuildMissing:       c.BuildMissing,
+		OrphanManaged:      c.Orphans, LegacyDirExists: c.LegacyDirExists,
 		X11Scale: c.X11Scale, X11DPIDesired: c.X11DPIDesired, X11DPIActual: c.X11DPIActual,
 		X11Available: c.X11Available, X11ConfigOK: c.X11ConfigOK, X11UnitsOK: c.X11UnitsOK,
 		X11UnitsPresent: c.X11UnitsPresent, X11ManagedPresent: c.X11ManagedPresent, X11PackageMissing: c.X11PackageMissing,
@@ -494,8 +521,10 @@ func Uninstall(opts Options) int {
 		opts.errf("[失败] 删除 theme-set 钩子：%v", err)
 		return ExitExecFail
 	}
-	if err := os.RemoveAll(theme.ThemeDir(state.Home())); err != nil {
-		opts.errf("[警告] 删除候选框主题目录失败：%v", err)
+	if removed, err := theme.RetireArtifacts(state.Home()); err != nil {
+		opts.errf("[警告] 清理候选框主题废弃产物：%v", err)
+	} else if len(removed) > 0 {
+		opts.outf("[完成] 候选框主题废弃产物已清理（%d 项）", len(removed))
 	}
 
 	// managed files: only delete tool-written ones without asking; hand-edited

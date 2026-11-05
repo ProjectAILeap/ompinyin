@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ProjectAILeap/ompinyin/internal/bar"
 	"github.com/ProjectAILeap/ompinyin/internal/catalog"
 	"github.com/ProjectAILeap/ompinyin/internal/deploy"
+	"github.com/ProjectAILeap/ompinyin/internal/execcmd"
 	"github.com/ProjectAILeap/ompinyin/internal/hidpi"
 	"github.com/ProjectAILeap/ompinyin/internal/hotkey"
 	"github.com/ProjectAILeap/ompinyin/internal/patches"
@@ -43,6 +45,20 @@ func ProfilePath() string { return filepath.Join(FcitxConfigDir(), "profile") }
 // ConfigPath is ~/.config/fcitx5/config.
 func ConfigPath() string { return filepath.Join(FcitxConfigDir(), "config") }
 
+// UnitExecStart is the seam for the EFFECTIVE unit ExecStart
+// (`systemctl --user show <unit> -p ExecStart --value`). Injectable so T0 never
+// shells out to the host's systemd.
+var UnitExecStart = func(unit string) (string, error) {
+	out, err := execcmd.Command("systemctl", "--user", "show", unit, "-p", "ExecStart", "--value").Output()
+	return string(out), err
+}
+
+// OmarchyInputMethodsPath is the 4.5+ capability marker: Omarchy's own
+// input-method indicator implementation. Its presence means "this Omarchy owns
+// the IM integration" (no SNI drop-in, no pin, no trigger keys, no theme hook).
+// Injectable so T0 can model both a 4.5 host and an upgraded 4.0 one.
+var OmarchyInputMethodsPath = "/usr/share/omarchy/default/input-methods/indicator.py"
+
 // Current is the observed snapshot.
 type Current struct {
 	PackagesMissing []string
@@ -65,6 +81,34 @@ type Current struct {
 
 	ProfileHasRime bool
 	HotkeyOK       bool
+	// OmarchyManagesIME: Omarchy 4.5+ owns the whole IM integration — the systemd
+	// unit (with `--disable notificationitem`), the bar indicator, the IM hotkeys
+	// (`Super+I` / left Shift) and the fcitx5 theme (`omarchy-theme-set-fcitx5`).
+	// Probed by FEATURE, never by version: the 4.5.0 package still ships
+	// /usr/share/omarchy/version = 4.0.0.alpha (docs/dev-notes.md P10).
+	OmarchyManagesIME bool
+	// BarIndicator: shell.json carries the omarchy.keyboard-layout widget, i.e.
+	// Omarchy's own IM indicator is on the bar (4.5+ terminal state).
+	BarIndicator bool
+	// StaleTray: 4.5+ only — leftovers from the pre-4.5 tray/theming path: the
+	// notificationitem drop-in, a "Fcitx" SNI pin, the retired theme hook, or the
+	// v1.0 generic override.conf.
+	StaleTray bool
+	// StaleOverride: the generic override.conf carries a body ompinyin itself
+	// wrote (v1.0's literal body, or the derived drop-in body). It REPLACES the
+	// unit's ExecStart, so on 4.5+ it re-enables fcitx5's own SNI item and the bar
+	// shows two icons. Name-agnostic file → recognised by content only.
+	StaleOverride bool
+	// EffectiveExecStart is the ExecStart systemd ACTUALLY uses (drop-ins
+	// applied), raw `systemctl show` output. The file on disk is not the truth.
+	EffectiveExecStart string
+	// ExecStartOK: 4.5+ terminal state — the effective ExecStart must keep
+	// Omarchy's `--disable notificationitem` (fcitx5 must not publish its own tray
+	// item; Omarchy renders the indicator). true when undecidable (no systemd/unit).
+	ExecStartOK bool
+	// ControlSpace: [Hotkey/TriggerKeys] still binds Control+space — the chord
+	// older ompinyin versions wrote and Omarchy 4.5+ deliberately does not.
+	ControlSpace bool
 	// GroupIMs is the input-method group's item list (fcitx5's enumeration order
 	// for Ctrl+Space). Every IM hotkey is gated on len(GroupIMs) > 1, so the
 	// planner compares this against Desired.IMs instead of only asking whether
@@ -100,12 +144,10 @@ type Current struct {
 	// a Restart=always flap (a stray holds the bus name), not a healthy service.
 	FcitxCount int
 
-	// L4 candidate-window theming (§6.6): files point at the omarchy theme
-	// (ConfOK/HookOK), the generated theme dir is in place (DirOK), and the
-	// managed bytes already equal the desired content (Equal).
+	// L4 candidate-window theming (§6.6): classicui.conf is ours; the colors are
+	// Omarchy's, and our old generator's artifacts (ConfOK / HookOK) are residue.
 	ThemeConfOK bool
 	ThemeHookOK bool
-	ThemeDirOK  bool
 	ThemeEqual  bool
 
 	BuildMissing []string
@@ -191,6 +233,9 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 		c.Orphans = patches.OrphanFiles(st, d)
 	}
 
+	// L4 capability: Omarchy 4.5+ took the IM integration back (feature probe).
+	c.OmarchyManagesIME = probeAll(OmarchyInputMethodsPath)
+
 	// L4
 	if b, err := os.ReadFile(ProfilePath()); err == nil {
 		content := string(b)
@@ -202,6 +247,11 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 		c.HotkeyOK = hotkey.HasTrigger(content, hotkey.DefaultKeys)
 		c.AltTriggerKeys = hotkey.AltTriggerKeys(content)
 		c.AltTriggerOK = hotkey.HasEmptyAltTrigger(content)
+		for _, k := range hotkey.TriggerKeys(content) {
+			if hotkey.SameKey(k, "Control+space") {
+				c.ControlSpace = true
+			}
+		}
 	}
 	// Cross-tool check (§6.2): another program may already own the chord.
 	prefix, extras := HerdrPrefix(state.Home())
@@ -216,13 +266,33 @@ func Collect(d catalog.Desired, st *state.State) *Current {
 		if pinned, perr := tray.ReadPinned(b); perr == nil {
 			c.PinnedHasFc = tray.HasPin(pinned)
 		}
+		c.BarIndicator = bar.IndicatorPresent(b)
 	}
 	c.ShellRunning = tray.ShellRunning()
 
-	// L4 candidate-window theming (§6.6)
+	// L4 candidate-window theming (§6.6): classicui is ours, the colors belong to
+	// Omarchy's generator (the hook is residue to retire).
 	th := theme.Observe(state.Home(), st)
-	c.ThemeConfOK, c.ThemeHookOK, c.ThemeDirOK = th.ConfOK, th.HookOK, th.DirOK
-	c.ThemeEqual = th.ConfEqual && th.HookEqual
+	c.ThemeConfOK, c.ThemeHookOK, c.ThemeEqual = th.ConfOK, th.HookOK, th.ConfEqual
+
+	// The v1.0 override.conf if it is still there (matched by CONTENT: the name is
+	// generic, so our own file cannot be told apart by name).
+	if b, err := os.ReadFile(tray.LegacyOverridePath(state.Home(), c.Unit)); err == nil {
+		c.StaleOverride = tray.LegacyOverrideMatches(string(b), tray.DerivedDropInBody(state.Home(), c.Unit))
+	}
+	// The effective ExecStart is what decides whether fcitx5 publishes its own
+	// tray item: any drop-in (ours, v1.0's override.conf, a hand-written one) can
+	// rewrite it. Unknowable = not decidable, never a failure.
+	c.ExecStartOK = true
+	if c.Unit != "" {
+		if out, err := UnitExecStart(c.Unit); err == nil {
+			c.EffectiveExecStart = strings.TrimSpace(out)
+			c.ExecStartOK = strings.Contains(out, "--disable notificationitem")
+		}
+	}
+
+	// 4.5+ residue: everything the pre-4.5 tray/theming path created.
+	c.StaleTray = c.OmarchyManagesIME && (c.DropInExists || c.PinnedHasFc || c.ThemeHookOK || c.StaleOverride)
 
 	// XWayland may not exist in a pure Wayland session. In that case this
 	// feature is a harmless no-op rather than a failed precondition.

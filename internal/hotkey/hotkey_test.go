@@ -211,3 +211,62 @@ func TestHasEmptyAltTriggerDistinguishesAbsent(t *testing.T) {
 		t.Error("present-but-childless section must count as empty")
 	}
 }
+
+// RemoveTriggerKey is how 4.5+ convergence gives the chord back: the key goes,
+// the section stays (fcitx5 reads an absent section as "shipped default").
+func TestRemoveTriggerKey(t *testing.T) {
+	in := strings.Join([]string{
+		"[Hotkey]",
+		"ModifierOnlyKeyTimeout=-1",
+		"",
+		"[Hotkey/TriggerKeys]",
+		"0=Control+space",
+		"",
+		"[Behavior]",
+		"ActiveByDefault=False",
+		"",
+	}, "\n")
+	out, changed, err := RemoveTriggerKey(in, "Control+space")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("removing a bound chord must report changed")
+	}
+	if strings.Contains(strings.ToLower(out), "control+space") {
+		t.Errorf("chord still bound:\n%s", out)
+	}
+	if !strings.Contains(out, "[Hotkey/TriggerKeys]\n") {
+		t.Errorf("the (now empty) section must be kept:\n%s", out)
+	}
+	if !strings.Contains(out, "[Behavior]\nActiveByDefault=False") {
+		t.Errorf("neighbouring section damaged:\n%s", out)
+	}
+	// idempotent: nothing left to remove
+	out2, changed2, err := RemoveTriggerKey(out, "Control+space")
+	if err != nil || changed2 || out2 != out {
+		t.Errorf("not idempotent (changed=%v err=%v):\n%s", changed2, err, out2)
+	}
+	// absent key / absent section: no churn
+	if _, changed, _ := RemoveTriggerKey("[Hotkey/TriggerKeys]\n0=Super+space\n", "Control+space"); changed {
+		t.Error("an unbound chord must not change the file")
+	}
+	if _, changed, _ := RemoveTriggerKey("[Hotkey]\n", "Control+space"); changed {
+		t.Error("a missing section must not be created")
+	}
+	// survivors are renumbered contiguously
+	renum, changed, err := RemoveTriggerKey("[Hotkey/TriggerKeys]\n0=Control+space\n1=Super+space\n", "Control+space")
+	if err != nil || !changed {
+		t.Fatalf("err=%v changed=%v", err, changed)
+	}
+	if !strings.Contains(renum, "0=Super+space") || strings.Contains(renum, "1=") {
+		t.Errorf("survivors not renumbered:\n%s", renum)
+	}
+	// spelling/case normalisation (Ctrl alias) and validation
+	if _, changed, _ := RemoveTriggerKey("[Hotkey/TriggerKeys]\n0=ctrl+SPACE\n", "Control+space"); !changed {
+		t.Error("Ctrl/Control and case must compare equal")
+	}
+	if _, _, err := RemoveTriggerKey("", "Shift"); err == nil {
+		t.Error("an invalid keysym must be rejected")
+	}
+}
