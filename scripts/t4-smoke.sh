@@ -43,33 +43,118 @@ needs=$(ompinyin install --dry-run --json | grep -o '"needsApply": *[a-z]*' | cu
 [ "$needs" = "false" ] || die "converged host reports needsApply=$needs — run 'ompinyin install -y' first"
 ok "converged re-run reports no work"
 
-# ------------------------------------------------- stray-instance self-heal
-# The trap: ANY D-Bus call while the unit is down activates an unmanaged fcitx5
-# which owns org.fcitx.Fcitx5, so the unit's own instances exit 0 immediately
-# and Restart=always loops them into start-limit-hit. `systemctl start` still
-# returns 0, so install must clear the stray rather than report success.
-systemctl --user stop "$UNIT"
-sleep 1
-fcitx5-remote >/dev/null 2>&1 || true   # the D-Bus call that *creates* the stray
-# The activation is asynchronous — wait for a real owner instead of guessing.
-owner=""
-for _ in $(seq 1 50); do
-  owner=$(busctl --user status org.fcitx.Fcitx5 2>/dev/null | awk -F= '/^PID=/{print $2}')
-  [ -n "$owner" ] && break
-  sleep 0.1
-done
-[ "$(systemctl --user is-active "$UNIT")" = "active" ] && die "unit came back on its own — cannot stage a stray"
-[ -n "$owner" ] && [ "$(pgrep -c -x fcitx5)" -ge 1 ] || die "no stray was activated — cannot stage a stray"
-must "install (clearing the stray)" ompinyin install -y
-[ "$(systemctl --user is-active "$UNIT")" = "active" ] || die "unit still down after install — the stray was not cleared"
-owner=$(busctl --user status org.fcitx.Fcitx5 | awk -F= '/^PID=/{print $2}')
-main=$(systemctl --user show -p MainPID --value "$UNIT")
-[ -n "$owner" ] && [ "$owner" = "$main" ] || die "org.fcitx.Fcitx5 owner=${owner:-none} != unit MainPID=$main"
-[ "$(pgrep -c -x fcitx5)" = "1" ] || die "$(pgrep -c -x fcitx5) fcitx5 processes alive, want exactly 1"
-ok "stray cleared; the unit owns org.fcitx.Fcitx5 (no Restart=always flap)"
+# ------------------------------------------- fcitx5 start path (stray / unit)
+# What this step proves in both Omarchy generations: install leaves EXACTLY ONE
+# fcitx5, and it is the supervised unit's own process holding
+# org.fcitx.Fcitx5. HOW that is proved differs, because 4.5 changed D-Bus
+# activation itself:
+#
+#   pre-4.5: any D-Bus call while the unit is down activates an UNMANAGED fcitx5
+#     that owns the bus name; the unit's instances then exit 0 immediately and
+#     Restart=always loops them into start-limit-hit. `systemctl start` still
+#     returns 0, so install has to clear the stray instead of reporting success.
+#   4.5+:    Omarchy installs ~/.local/share/dbus-1/services/
+#     org.fcitx.Fcitx5.service with `SystemdService=omarchy-fcitx5.service`, so
+#     activation starts the SUPERVISED unit — a stray is practically impossible.
+#     The assertion flips to "activation is routed to the unit".
+DBUS_UNIT_FILE="$HOME/.local/share/dbus-1/services/org.fcitx.Fcitx5.service"
+if [ -f "$DBUS_UNIT_FILE" ] && grep -qx "SystemdService=$UNIT" "$DBUS_UNIT_FILE"; then
+  # ---- 4.5+: D-Bus activation brings the managed unit back, not a stray ----
+  systemctl --user stop "$UNIT"
+  for _ in $(seq 1 50); do   # stop is asynchronous — wait, never sleep-and-guess
+    [ "$(systemctl --user is-active "$UNIT")" = "active" ] || break
+    sleep 0.1
+  done
+  [ "$(systemctl --user is-active "$UNIT")" != "active" ] \
+    || die "$UNIT did not stop — cannot exercise D-Bus activation"
+
+  fcitx5-remote >/dev/null 2>&1 || true   # the D-Bus call, now routed to the unit
+  for _ in $(seq 1 50); do   # ~5s budget
+    [ "$(systemctl --user is-active "$UNIT")" = "active" ] && break
+    sleep 0.1
+  done
+  [ "$(systemctl --user is-active "$UNIT")" = "active" ] \
+    || die "D-Bus activation did not start $UNIT within ~5s (is SystemdService= in $DBUS_UNIT_FILE stale?)"
+
+  owner=$(busctl --user status org.fcitx.Fcitx5 | awk -F= '/^PID=/{print $2}')
+  main=$(systemctl --user show -p MainPID --value "$UNIT")
+  [ -n "$owner" ] && [ "$owner" = "$main" ] \
+    || die "org.fcitx.Fcitx5 owner=${owner:-none} != unit MainPID=$main (activation spawned an unmanaged instance)"
+  procs=$(pgrep -c -x fcitx5 || true)
+  [ "$procs" = "1" ] || die "$procs fcitx5 processes alive after D-Bus activation, want exactly 1"
+
+  # install must stay idempotent on this path too (§3 幂等零扰动)
+  must "install (after D-Bus activation)" ompinyin install -y
+  [ "$(systemctl --user is-active "$UNIT")" = "active" ] || die "unit down after install"
+  procs=$(pgrep -c -x fcitx5 || true)
+  [ "$procs" = "1" ] || die "$procs fcitx5 processes alive after install, want exactly 1"
+  ok "D-Bus activation starts the supervised unit (4.5+: a stray cannot be produced); install stayed idempotent"
+else
+  # ---- pre-4.5: stage a stray and prove install clears it ----
+  systemctl --user stop "$UNIT"
+  sleep 1
+  fcitx5-remote >/dev/null 2>&1 || true   # the D-Bus call that *creates* the stray
+  # The activation is asynchronous — wait for a real owner instead of guessing.
+  owner=""
+  for _ in $(seq 1 50); do
+    owner=$(busctl --user status org.fcitx.Fcitx5 2>/dev/null | awk -F= '/^PID=/{print $2}')
+    [ -n "$owner" ] && break
+    sleep 0.1
+  done
+  [ "$(systemctl --user is-active "$UNIT")" = "active" ] && die "unit came back on its own — cannot stage a stray"
+  [ -n "$owner" ] && [ "$(pgrep -c -x fcitx5)" -ge 1 ] || die "no stray was activated — cannot stage a stray"
+  must "install (clearing the stray)" ompinyin install -y
+  [ "$(systemctl --user is-active "$UNIT")" = "active" ] || die "unit still down after install — the stray was not cleared"
+  owner=$(busctl --user status org.fcitx.Fcitx5 | awk -F= '/^PID=/{print $2}')
+  main=$(systemctl --user show -p MainPID --value "$UNIT")
+  [ -n "$owner" ] && [ "$owner" = "$main" ] || die "org.fcitx.Fcitx5 owner=${owner:-none} != unit MainPID=$main"
+  [ "$(pgrep -c -x fcitx5)" = "1" ] || die "$(pgrep -c -x fcitx5) fcitx5 processes alive, want exactly 1"
+  ok "stray cleared; the unit owns org.fcitx.Fcitx5 (no Restart=always flap)"
+fi
 
 must "doctor" ompinyin doctor
 ok "doctor clean"
+
+# --------------------------------------------------- 4.5 hand-over invariants
+# Cheap, GUI-free checks for the two ways a converged 4.5 host can still show the
+# WRONG thing: a leftover drop-in reviving fcitx5's own SNI item (two bar icons),
+# or our retired theme generator fighting omarchy-theme-set-fcitx5.
+INDICATOR=/usr/share/omarchy/default/input-methods/indicator.py
+if [ -e "$INDICATOR" ]; then
+  DROPDIR="$HOME/.config/systemd/user/$UNIT.d"
+  [ ! -e "$DROPDIR/ompinyin-notificationitem.conf" ] \
+    || die "4.5 host still carries our notificationitem drop-in: $DROPDIR/ompinyin-notificationitem.conf"
+  # NB: `if`/`fi`, not `grep && die` — under `set -e` a failing AND-list is fatal.
+  if [ -f "$DROPDIR/override.conf" ] && grep -qE '^ExecStart=/?usr/bin/fcitx5( |$)' "$DROPDIR/override.conf"; then
+    die "override.conf overrides Omarchy's ExecStart (fcitx5 publishes its own tray icon → two icons): $(grep -n ExecStart= "$DROPDIR/override.conf")"
+  fi
+  # the file-level check is not enough: systemd applies the drop-ins, and the
+  # EFFECTIVE ExecStart is what decides whether fcitx5 announces itself.
+  execstart=$(systemctl --user show "$UNIT" -p ExecStart --value)
+  case "$execstart" in
+    *"--disable notificationitem"*) ;;
+    *) die "effective ExecStart lost --disable notificationitem: $execstart"
+       ;;
+  esac
+  ok "Omarchy owns the tray: no stale drop-in/override, ExecStart keeps --disable notificationitem"
+
+  # The candidate-window theme comes from omarchy-theme-set-fcitx5; our retired
+  # generator's artifacts must be gone while Omarchy's files stay.
+  THEMEDIR="$HOME/.local/share/fcitx5/themes/omarchy"
+  [ -f "$THEMEDIR/theme.conf" ] || die "Omarchy's fcitx5 theme.conf is missing: $THEMEDIR"
+  # Our generator wrote REGULAR files here; Omarchy's theme uses symlinks into
+  # /usr/share/fcitx5/themes/default. So a regular file is ours (must be gone), a
+  # symlink is Omarchy's (fine) — this stays truthful even if upstream starts
+  # shipping a background.svg of its own.
+  for f in background.svg highlight.svg; do
+    if [ -f "$THEMEDIR/$f" ] && [ ! -L "$THEMEDIR/$f" ]; then
+      die "our retired theme artifact is back: $THEMEDIR/$f (should be Omarchy's symlink or absent)"
+    fi
+  done
+  ok "candidate window: Omarchy's theme only (no ompinyin hook artifacts)"
+else
+  echo "! pre-4.5 Omarchy (no $INDICATOR) — skipping the 4.5 hand-over invariants"
+fi
 
 # ------------------------------------------- self-upgrade across filesystems
 # The release artifact path, and the bug that shipped in v1.2.1–v1.2.2: the
@@ -118,7 +203,9 @@ ok "publisher unit restored to $exec_path; doctor still clean"
 
 # ---------------------------------------------------------------- manual items
 cat <<'EOF'
-  still manual (§15): F4 schema switch, Ctrl+Space on/off + Shift 中英, top-bar icon visible,
-  SIGINT inside a stop window restarts fcitx5, backup rollback, --dsp grammar in both schemas.
+  still manual (§15), Omarchy 4.5+: F4 schema switch, Super+I cycles the input method,
+  left Shift enters/leaves it, Ctrl+Space is left to the terminal (no IME toggle),
+  EXACTLY ONE input-method indicator on the bar (not two), SIGINT inside a stop window
+  restarts fcitx5, backup rollback, --dsp grammar in both schemas.
 EOF
 ok "T4 smoke passed"
